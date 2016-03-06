@@ -451,7 +451,8 @@ class TTComCmd(MyCmd):
 		"""
 		# Users other than me and that are actuallly in a channel.
 		users = filter(lambda u:
-			u.get("channel") and u.userid != server.me.userid
+			(u.get("channelid") or u.get("chanid"))
+			and u.userid != server.me.userid
 		, server.users.values())
 		if not len(users):
 			return
@@ -476,9 +477,12 @@ class TTComCmd(MyCmd):
 		channel,password = "",""
 		if args: channel = args.pop(0)
 		if args: password = args.pop(0)
-		if not (channel.startswith("/") and channel.endswith("/")):
-			channel = self.channelMatch(channel).channel
-		self.do_send('join channel="%s" password="%s"' % (channel, password))
+		if channel == "/" or not (channel.startswith("/") and channel.endswith("/")):
+			channel = self.channelMatch(channel)
+		if self.curServer.is5():
+			self.do_send('join chanid=%s password="%s"' % (channel.chanid, password))
+		else:
+			self.do_send('join channel="%s" password="%s"' % (channel.channel, password))
 
 	def do_leave(self, line):
 		"""Leave a channel.
@@ -490,8 +494,11 @@ class TTComCmd(MyCmd):
 			self.do_send("leave")
 			return
 		line = self.dequote(line)
-		line = self.channelMatch(line).channel
-		self.do_send('leave channel="' +line +'"')
+		ch = self.channelMatch(line)
+		if self.curServer.is5():
+			self.do_send('leave channel=' +ch.chanid)
+		else:
+			self.do_send('leave channel="' +ch.channel +'"')
 
 	def do_nick(self, line):
 		"""Set a new nickname or check the current one.
@@ -566,24 +573,38 @@ class TTComCmd(MyCmd):
 			else:
 				users.append(self.userMatch(u))
 		channel = self.channelMatch(args[-1])
+		is5 = self.curServer.is5()
 		for u in users:
-			self.do_send("moveuser userid=%s destchannel=\"%s\"" % (
-				u["userid"],
-				channel["channel"]
-			))
+			if is5:
+				self.do_send("moveuser userid=%s chanid=%s" % (
+					u["userid"],
+					channel["chanid"]
+				))
+			else:
+				self.do_send("moveuser userid=%s destchannel=\"%s\"" % (
+					u["userid"],
+					channel["channel"]
+				))
 
 	def do_cmsg(self, line):
 		"""Send a message to a channel.
 		Usage: cmsg <channelname> <message>
+		Also used internally to implement the stats command.
 		"""
 		args = self.getargs(line, 1)
 		if len(args) < 2:
 			raise SyntaxError("A channel name and a message must be specified")
 		channel = self.channelMatch(args[0])
-		self.do_send('message type=2 channel="%s" content="%s"' % (
-			channel.channel,
-			args[1]
-		))
+		if self.curServer.is5():
+			self.do_send('message type=2 chanid=%s content="%s"' % (
+				channel.chanid,
+				args[1]
+			))
+		else:
+			self.do_send('message type=2 channel="%s" content="%s"' % (
+				channel.channel,
+				args[1]
+			))
 
 	def _handleSubscriptions(self, isIntercept, line):
 		"""Does the work for do_subscribe and do_intercept.
@@ -971,6 +992,8 @@ class TTComCmd(MyCmd):
 		channelid = u.pop("channelid", "")
 		channel = u.pop("channel", "")
 		if channelid or channel:
+			if not channel:
+				channel = self.curServer.channels[channelid].channel
 			buf += "\nOn channel %s (%s)" % (channelid, channel)
 		server = u.pop("server", None)
 		if server:
@@ -1110,12 +1133,15 @@ class TTComCmd(MyCmd):
 	def do_admins(self, line=""):
 		"""List the admins and where they are and come from.
 		"""
+		channelname = self.curServer.channelname
 		for u in self.curServer.users.values():
 			if int(u.usertype) != 2: continue
+			ch = None
+			if u.chanid: ch = channelname(u.chanid)
 			print "%s: %s, %s" % (
 				self.curServer.nonEmptyNickname(u),
 				u.ipaddr,
-				u.channel
+				ch
 			)
 
 	def do_ping(self, line=""):

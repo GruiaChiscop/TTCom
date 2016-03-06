@@ -548,8 +548,13 @@ def say(*args):
 		except: print __main__.err()
 		pythoncom.CoUninitialize()
 	elif plat == "darwin": # MacOS
-		cmd = "say"
+		tmpfile = os.tempnam()
+		cmd = ["say", "-o", tmpfile]
 		subprocess.Popen(cmd, stdin=subprocess.PIPE).communicate(s.encode("UTF-8"))
+		cmd = ["afplay", tmpfile]
+		subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).communicate()
+		try: os.remove(tmpfile)
+		except OSError: pass
 	elif "linux" in plat.lower():
 		pass
 

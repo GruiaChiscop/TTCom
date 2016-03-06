@@ -43,4 +43,4 @@ if __name__ == "__main__":
 	if shortnames:
 		cur = shortnames[-1]
 		ttcom.onecmd("server " +cur)
-	ttcom.run("TTCom> ", "TeamTalk Commander")
+	ttcom.run("TTCom> ", "TeamTalk Commander version 1.1")

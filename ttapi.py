@@ -162,6 +162,7 @@ class TeamTalkServerConnection(object):
 			- Passes the welcome message back to the caller.
 			- Gets the usertimeout for determining ping frequency.
 			- Collects other welcome-line parameters into self.welcomeParms.
+			- Starts the pinger thread for this server.
 			- Sends a UDP packet that prevents Windows XP clients on
 			  this server from freezing briefly on this client's login.
 			- Signals disconnection on error during all that.
@@ -222,6 +223,8 @@ class TeamTalkServerConnection(object):
 		(DC 0F is 0x0FDC, or 4060, the userid for this session)
 		This packet should be sent as soon as the server Welcome
 		message shows up. [DGL, 2012-01-02]
+		NOTE: If udpport==0, calling this method is a no-op.
+		This method does not work on TeamTalk 5. [DGL, 2014-09-20]
 		"""
 		port = self.parent.loginParms.get("udpport")
 		if port is None: port = int(self.port)
@@ -364,7 +367,7 @@ class TeamtalkServer(object):
 		self.autoLogin = 0
 		parms.setdefault("tcpport", "10333")
 		parms.setdefault("udpport", parms["tcpport"])
-		parms.setdefault("version", "4.2.0.1479")
+		parms.setdefault("version", "TTCom")
 		# Teamtalk 4.3 clients pop up an error like this if there is
 		# no nickname= parameter on the login command line:
 		#	An error occurred while perform a requested command:
@@ -597,6 +600,14 @@ class TeamtalkServer(object):
 		"""
 		pass
 
+	def is5(self):
+		"""Returns True for a tt5 server and False for a tt4 server.
+		"""
+		ver = self.info.version
+		if not ver: return False
+		ver = ver[0]
+		return ver == "5"
+
 	def send(self, parmline):
 		"""Send a command to this server.
 		parmline can be a ParmLine object or a plain text line.
@@ -659,7 +670,7 @@ class TeamtalkServer(object):
 		ip = user.get("ipaddr")
 		if not ip or ip.startswith("0.0.0.0"):
 			ip = user.get("udpaddr")
-			if ip.startswith("0.0.0.0"): ip = ""
+			if not ip or ip.startswith("0.0.0.0"): ip = ""
 			if ip: ip = "UDP " +ip.rsplit(":", 1)[0]
 		if ip: ip = "from %s" % (ip)
 		if ip: name += " " +ip
@@ -672,7 +683,19 @@ class TeamtalkServer(object):
 		Pass a channel ID, or a channel name with isRawName=True.
 		"""
 		if isRawName: name = id
-		else: name = self.channels[id].channel
+		else:
+			ch = self.channels[id]
+			try: name = ch.channel
+			except: name = None
+			if not name:
+				# In case .channel goes away...
+				# TT5 introduced .name and .parentid.
+				name = ""
+				while True:
+					name = "/".join(ch.name, name)
+					ch = self.channels[str(ch.parentid)]
+					if not int(ch.parentid): break
+				name += "/"
 		if name == "/":
 			name = "the root channel"
 		return name
@@ -744,6 +767,9 @@ class TeamtalkServer(object):
 		activeChannels = {}
 		for user in users:
 			channel = user.get("channel")
+			if channel is None:
+				cid = user.get("chanid")
+				if cid: channel = self.channels[cid].channel
 			activeChannels.setdefault(channel, set())
 			activeChannels[channel].add(self.nonEmptyNickname(user))
 		lines = []
@@ -1306,8 +1332,10 @@ class TeamtalkServer(object):
 			self.nonEmptyNickname(self.users[parms.userid]),
 			self.channelname(parms.channelid)
 		))
-		del self.users[parms['userid']]['channelid']
-		del self.users[parms['userid']]['channel']
+		u = self.users[parms['userid']]
+		del u['channelid']
+		try: del u['channel']
+		except KeyError: pass
 		if self.users[parms.userid].temporary:
 			# This user record sprang up on a channel join,
 			# which means this server hides users until you join their channel.
