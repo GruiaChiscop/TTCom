@@ -3,7 +3,6 @@
 """TeamTalk Commander, the multiserver TeamTalk control client.
 
 Author:  Doug Lee
-Copyright 2011-2014 Doug Lee
 
 Credits to Chris Nestrud and Simon Jaeger for some ideas and a bit
 of code.  Thanks to Nick Giannak and HKC Radio for sufficient access
@@ -12,13 +11,21 @@ this software's development.
 
 This software is released under the GPL as of September 7, 2014; see LICENSE.txt.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
+Copyright (C) 2011-2015 Doug Lee
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 """
 
 import sys, threading
@@ -43,4 +50,4 @@ if __name__ == "__main__":
 	if shortnames:
 		cur = shortnames[-1]
 		ttcom.onecmd("server " +cur)
-	ttcom.run("TTCom> ", "TeamTalk Commander version 1.1")
+	ttcom.run("TTCom> ", ttcom.versionString())

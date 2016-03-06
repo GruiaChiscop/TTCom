@@ -1,7 +1,7 @@
 This is TTCom, the TeamTalk Commander, also informally referred to as
 the TeamTalk Console.
 
-This file is current as of revision 607 of TTCom.
+This file is current as of revision 651 of TTCom.
 
 Usage:
 

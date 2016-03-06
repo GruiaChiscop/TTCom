@@ -1,7 +1,26 @@
+"""Command implementation module for TTCom.
+
+Copyright (C) 2011-2015 Doug Lee
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+
 import gzip
 from time import sleep, ctime
 from datetime import datetime
-import os, sys, re, subprocess, socket
+import os, sys, re, subprocess, socket, shlex
 import threading
 from attrdict import AttrDict
 from ttapi import TeamtalkServer
@@ -336,6 +355,29 @@ class TTComCmd(MyCmd):
 		try: return self.servers[s]
 		except KeyError: pass
 		return self.servers[self.selectMatch(servers, "Select a Server")]
+
+	def versionString(self):
+		"""Return the version string for TTCom.
+		"""
+		return (
+"""TeamTalk Commander (TTCom)
+Copyright (c) 2011-2015 Doug Lee.
+
+This program is covered by version 3 of the GNU General Public License.
+This program comes with ABSOLUTELY NO WARRANTY.
+This is free software, and you are welcome to redistribute it under
+certain conditions.
+See the file LICENSE.txt for further information.
+The iniparse module is under separate license and copyright;
+see that file for details.
+
+TTCom version 1.2
+""".strip())
+
+	def do_version(self, line=""):
+		"""Show the version information for TTCom.
+		"""
+		self.msg(self.versionString())
 
 	def do_server(self, line):
 		"""Get or change the server to which subsequent commands will apply,
@@ -706,14 +748,6 @@ class TTComCmd(MyCmd):
 
 	def do_stats(self, line=""):
 		"""Show statistics for a server.
-		This version does not require admin privileges on the server,
-		and it returns more information than the statsAdmin command too.
-		It does require that users be allowed to issue channel commands.
-		"""
-		self.do_cmsg("/ /stats")
-
-	def do_statsAdmin(self, line=""):
-		"""Show statistics for a server.
 		This requires admin privileges on the server.
 		"""
 		self.do_send("querystats")
@@ -775,11 +809,11 @@ class TTComCmd(MyCmd):
 		if not line:
 			raise SyntaxError("Must specify a user or IP address")
 		bans = self.getBans()
-		bans = filter(lambda b: line in b.line, bans)
-		choice = self.ask("Remove %d ban(s)? (y/n):" % (len(bans))).lower()
-		if choice == "y":
-			for b in bans:
-				self.do_send('unban ipaddr="%s"' % (b.ipaddr))
+		if not bans: raise ValueError("No bans found")
+		bans = filter(lambda b: line.lower() in b.line.lower(), bans)
+		ban = self.selectMatch(bans, "Select a Ban To Remove")
+		ban = ParmLine(ban)
+		self.do_send('unban ipaddr="%s"' % (ban.parms.ipaddr))
 
 	def do_kb(self, line):
 		"""Kick and ban a user by name or ID.
@@ -804,7 +838,8 @@ class TTComCmd(MyCmd):
 		return d
 
 	def getBans(self):
-		"""Returns the bans on this server as a list.
+		"""Returns the bans on this server as a list of lines.
+		The lines are the responses to the "listbans" command, one line per ban.
 		"""
 		bans = self.request("listbans")
 		resp = bans.pop()
@@ -825,7 +860,9 @@ class TTComCmd(MyCmd):
 			usertype=<type>
 			note=<text> (rarely used)
 			userdata=<number> (rarely used)
-		Usertype: 1 for a normal (default) account, 2 for an admin account.
+		<type>: 1 for a normal (default) account, 2 for an admin account, or an account identifier (TT5 only).
+		An account identifier must match exactly one account and will be used to obtain user rights.
+		Use "" to specify the anonymous account as a source of rights.
 		Quote any arguments that contain spaces.
 		Example commands:
 			List all: account
@@ -834,7 +871,7 @@ class TTComCmd(MyCmd):
 			Delete: account -d dlee
 			Modify: account -m dlee password=blurfl
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
 		if not args:
 			accts = self.getAccounts()
 			tbl = TableFormatter("User Accounts", [
@@ -873,19 +910,36 @@ class TTComCmd(MyCmd):
 			if whichAcct.lower() in map(lambda a: a.lower(), acctDict):
 				raise ValueError("Account %s already exists" % (whichAcct))
 			if not args:
-				raise SyntaxError("Must include a password and a user type")
+				if self.curServer.is5():
+					raise SyntaxError("Must include a password and a user type or user rights source account")
+				else:
+					raise SyntaxError("Must include a password and a user type")
 			pw = args.pop(0)
 			if not args:
-				raise SyntaxError("Must include a user type (1 default, 2 admin)")
+				raise SyntaxError("Must include a user type (1 default, 2 admin) or an account to use for user rights")
 			utype = args.pop(0)
+			if utype not in ["1", "2"] and self.curServer.is5():
+				if utype == "" and acctDict.has_key(""):
+					acct = acctDict[""]
+				else:
+					accts = filter(lambda a: utype.lower() in a.lower(), acctDict)
+					rightsAcct = self.selectMatch(accts, "Select an Account For User Rights")
+					acct = acctDict[rightsAcct]
+				self.do_send('newaccount username="%s" password="%s" usertype=1 userRights=%s' % (
+					whichAcct, pw, acct.parms.userRights
+				))
+				return
 			self.do_send('newaccount username="%s" password="%s" usertype=%s' % (
 				whichAcct, pw, utype
 			))
 			return
 		# show/del/mod.
-		accts = filter(lambda a: whichAcct.lower() in a.lower(), acctDict)
-		whichAcct = self.selectMatch(accts, "Select an Account")
-		acct = acctDict[whichAcct]
+		if whichAcct == "" and acctDict.has_key(""):
+			acct = acctDict[""]
+		else:
+			accts = filter(lambda a: whichAcct.lower() in a.lower(), acctDict)
+			whichAcct = self.selectMatch(accts, "Select an Account")
+			acct = acctDict[whichAcct]
 		if action == "show":
 			print acct
 			return

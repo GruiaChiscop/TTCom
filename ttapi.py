@@ -1,9 +1,23 @@
-#!/usr/bin/env python -i
-
 """TeamTalk server connection manager.
 
 Author:  Doug Lee
 Credits to Chris Nestrud and Simon Jaeger for some ideas and a bit of code.
+
+Copyright (C) 2011-2015 Doug Lee
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 """
 
 from time import sleep
@@ -163,8 +177,6 @@ class TeamTalkServerConnection(object):
 			- Gets the usertimeout for determining ping frequency.
 			- Collects other welcome-line parameters into self.welcomeParms.
 			- Starts the pinger thread for this server.
-			- Sends a UDP packet that prevents Windows XP clients on
-			  this server from freezing briefly on this client's login.
 			- Signals disconnection on error during all that.
 		"""
 		self.state = "connecting"
@@ -196,9 +208,6 @@ class TeamTalkServerConnection(object):
 			self.state = "makeThreads"
 			self.newThread(self.watcher)
 			self.newThread(self.pinger)
-			self.state = "sendUDP"
-			self.sendUDP()
-			# can time out and raise an error.
 			self.state = "connected"
 			# No timeouts after connect so packets don't split up.
 			self.sock.settimeout(None)
@@ -207,43 +216,6 @@ class TeamTalkServerConnection(object):
 			self.disconnect()
 			self.state = "disconnected"
 			raise
-
-	def sendUDP(self):
-		"""Send a UDP packet that seems to be required at login to avoid a
-		two-or-so-second lockup on XP machines running the 4.2 client.
-		The UDP packet sent is not a complete packet compared to what
-		clients send but appears to be enough for this purpose. The
-		packet structure appears to be as follows:
-			0x01 0x02: Bytes seen in a Windows 4.2 client UDP packet
-				and sent without interpretation.
-			Little-endian format of userid field from TCP Welcome
-				message from server.
-			Six 0's, not sure what belongs there.
-		Example real 4.2 UDP packet (hex): 01 02 DC 0F 00 00 4E 78 5C 2E
-		(DC 0F is 0x0FDC, or 4060, the userid for this session)
-		This packet should be sent as soon as the server Welcome
-		message shows up. [DGL, 2012-01-02]
-		NOTE: If udpport==0, calling this method is a no-op.
-		This method does not work on TeamTalk 5. [DGL, 2014-09-20]
-		"""
-		port = self.parent.loginParms.get("udpport")
-		if port is None: port = int(self.port)
-		elif int(port) > 0: port = int(port)
-		else:
-			return
-		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-		userid = int(self.userid)
-		# Little-endian representation of the userid for transmission.
-		userid = chr(userid & 0xFF) +chr(userid >> 8)
-		data = "\1\2%s\0\0\0\0\0\0" % (
-			userid
-		)
-		sock.settimeout(10)
-		sock.connect((self.host, port))
-		sock.send(data)
-		# Wait for a response without worrying about what it is.
-		sock.recv(1)
-		sock.close()
 
 	def disconnect(self, reason=""):
 		"""Disconnect and send the corresponding callback signal.
@@ -906,9 +878,12 @@ class TeamtalkServer(object):
 		Returns the string formed.
 		Requires an active and logged-in server connection.
 		"""
+		ver = self.info.version
+		if ver < "5.0": ver = "4.0"
+		else: ver = "5.0"
 		tmpl = (
 """<?xml version="1.0" encoding="UTF-8" ?>
-<teamtalk version="4.0">
+<teamtalk version="%(ver)s">
     <host>
         <name>%(name)s</name>
         <address>%(hostaddr)s</address>
@@ -945,7 +920,8 @@ class TeamtalkServer(object):
 			"username": userInfo.username or "",
 			"password": userInfo.password or "",
 			"channel": channel.channel or "",
-			"chanpassword": channel.password or ""
+			"chanpassword": channel.password or "",
+			"ver": ver
 		}
 		return tmpl % ttinfo
 
@@ -1236,9 +1212,22 @@ class TeamtalkServer(object):
 	def event_updatechannel(self, parms):
 		"""Sent when a channel is changed.
 		"""
-		name = self.channels[parms.channelid].channel
+		chan = self.channels[parms.channelid]
+		name = chan.channel
 		self.updateParms(name, self.channels[parms.channelid], parms)
+		if self.is5(): self._updateChannelValue(chan)
 		return True
+
+	def _updateChannelValue(self, chan):
+		"""For TT5 servers, update chan.channel in case name or parentid changed.
+		The updateChannel event does not include the .channel property on TT5.
+		"""
+		path = "/"
+		c = chan
+		while c.parentid and c.parentid != "0":
+			path = "/%s%s" % (c.name, path)
+			c = self.channels[c.parentid]
+		chan["channel"] = path
 
 	def event_adduser(self, parms):
 		"""Sent when a user joins a channel and when this user is logging in.
