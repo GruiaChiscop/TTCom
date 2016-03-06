@@ -1,3 +1,7 @@
+# Note:
+
+This is not my work; the author of this program is [Doug lee](http://dlee.org), and should be acorded all legal  rights, bla, bla, bla. I will, however, probably be updating and restructuring it, and all such modifications will of course be self-documenting in the git history. You can find the official TTCom page, as well as downloads and a nice write up of it's history [here](http://dlee.org/TTCom/).
+
 # TTCom
 This is TTCom, the TeamTalk Commander, also informally referred to as
 the TeamTalk Console.
@@ -7,8 +11,6 @@ This file is current as of revision 651 of TTCom.
 ## Usage
 
 Install Python 2.5 or later, but not 3.x, if not already done on your OS.
-
-Install this file set somewhere convenient, unzipped.
 
 Copy ttcom_default.conf to ttcom.conf and edit to taste. This is where
 servers and per-server behaviors are defined. The autoLogin parameter
@@ -30,14 +32,30 @@ possible. You can add a command name for help on that command; e.g.,
 
 ## License
 TTCom is released under the GNU Public License (GPL), a copy of which
-appears in LICENSE.txt. iniparse, included in its entirety, comes with
+appears in the 'LICENSE' file. iniparse, included in its entirety, comes with
 its own license (also included).
 
 ## Changelog
 
 History, most recent first:
 
-Version 1.1, rel 607:
+### Revision 652, released November 21, 2015 (version 1.2)
+
+This revision fixes more issues with TeamTalk 5 servers and adds a few enhancements: 
+* A new version command reports the running TTCom version and other information. 
+* Joining the root channel (/) works as expected. 
+* The tt file should generate TT files compatible with the TeamTalk server version for which the file is being generated. 
+* TTCom will keep up with channel renaming on a TeamTalk 5 server without requiring a TTCom restart. 
+* Deleting bans with ban -d works. 
+* The account command works on TeamTalk 5 and supports copying user rights from a chosen source account when creating a new one. To use this feature, specify an account name (or something that matches an account name) in place of the 1 or 2 normally given as a user type. To use the anonymous account as the source account for user rights, specify "" in place of the user type. The user type will become 1 and the user rights for the new account will duplicate those assigned to the source account indicated. 
+* The anonymous account is more properly supported in other account scenarios; for example, acc "" reports the information for the anonymous account instead of displaying a list of all accounts. 
+* It is no longer necessary to add udpport=0 to every ttcom.conf entry for TeamTalk 5 servers. TTCom no longer transmits a UDP handshake at all. (This was implemented to avoid short Windows XP client freezes on TeamTalk 4 servers, but Windows XP has long been deprecated by Microsoft.) 
+* The statsAdmin command is now changed simply to stats, and the old stats command is gone. Reasons for this include:
+  * The old command never worked on TeamTalk 5 servers because TeamTalk 5 does not support / commands sent to a channel.. 
+  * Attempting to use the old command on a TeamTalk 5 server would run the risk of sending the string /stats visibly into the root channel even if the sending console was not there, which could startle and confuse users. 
+  * The old command stopped working for non-admin users on TeamTalk 4 servers at some point. Version 1.1, rel 607:
+
+### Revision 607, released December 20, 2014 (version 1.1)
 
 TTCom works better with TeamTalk 5 servers:
 
@@ -66,6 +84,5 @@ through `say' in order to avoid the speech breakup that occurs often
 causes a Python warning against use of tempnam() on the first say
 command call.
 
-Version 1.0, rel 580:
-
+### Revision 580, released September 7, 2014 (version 1.0)
 First public release.
