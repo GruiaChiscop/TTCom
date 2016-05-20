@@ -6,7 +6,7 @@ This is not my work; the author of this program is [Doug lee](http://dlee.org), 
 This is TTCom, the TeamTalk Commander, also informally referred to as
 the TeamTalk Console.
 
-This file is current as of revision 651 of TTCom.
+This file is current as of revision 652 of TTCom.
 
 ## Usage
 
@@ -59,30 +59,23 @@ This revision fixes more issues with TeamTalk 5 servers and adds a few enhanceme
 
 TTCom works better with TeamTalk 5 servers:
 
-- Events no longer generate errors.
-
-- Channel membership is reported correctly.
-
-- WhoIs works when TTCom is not logged in as an admin.
-
-- Move, join, leave, cmsg, and several other commands work as well.
+* Events no longer generate errors.
+* Channel membership is reported correctly.
+* WhoIs works when TTCom is not logged in as an admin.
+* Move, join, leave, cmsg, and several other commands work as well.
 
 The following commands still do not work completely on TeamTalk 5
 servers:
 
-- account (list may omit fields, and add/modify will not work).
-- intercept and subscribe (bits are wrong).
-- op (not tested but not updated command formats).
-- tt (not able to write updated file format).
+* account (list may omit fields, and add/modify will not work).
+* intercept and subscribe (bits are wrong).
+* op (not tested but not updated command formats).
+* tt (not able to write updated file format).
 
-The default version string is now "TTCom" instead of "4.2.0.1479."
+Other changes in this release: 
 
-The say command usable in triggers, when used on MacOS, now uses the
-`afplay' command and a temporary file instead of piping directly
-through `say' in order to avoid the speech breakup that occurs often
-(at least on SnowLeopard) when the `say' command is used. This change
-causes a Python warning against use of tempnam() on the first say
-command call.
+* The default version string is now "TTCom" instead of "4.2.0.1479."
+* The say command usable in triggers, when used on MacOS, now uses the `afplay' command and a temporary file instead of piping directly through `say' in order to avoid the speech breakup that occurs often (at least on SnowLeopard) when the `say' command is used. This change causes a Python warning against use of tempnam() on the first say command call.
 
 ### Revision 580, released September 7, 2014 (version 1.0)
 First public release.
