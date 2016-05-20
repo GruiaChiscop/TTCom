@@ -1,12 +1,11 @@
-# Note:
-
-This is not my work; the author of this program is [Doug lee](http://dlee.org), and should be acorded all legal  rights, bla, bla, bla. I will, however, probably be updating and restructuring it, and all such modifications will of course be self-documenting in the git history. You can find the official TTCom page, as well as downloads and a nice write up of it's history [here](http://dlee.org/TTCom/).
-
 # TTCom
-This is TTCom, the TeamTalk Commander, also informally referred to as
-the TeamTalk Console.
+This is TTCom, the TeamTalk Commander, also informally referred to as the TeamTalk Console.
 
 This file is current as of revision 652 of TTCom.
+
+## Note:
+
+This is not my work; the author of this program is [Doug lee](http://dlee.org), and should be acorded all legal  rights, bla, bla, bla. I will, however, probably be updating and restructuring it, and all such modifications will of course be self-documenting in the git history. You can find the official TTCom page, as well as downloads and a nice write up of it's history [here](http://dlee.org/TTCom/).
 
 ## Usage
 
