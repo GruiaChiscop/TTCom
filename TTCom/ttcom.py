@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 
+# This module starts TTCom, giving it it's initial prompt and selecting the last server passed in the args, as well as allowing -n to disable all autologins
 """TeamTalk Commander, the multiserver TeamTalk control client.
 
 Author:  Doug Lee

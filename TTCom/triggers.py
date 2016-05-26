@@ -1,3 +1,6 @@
+# This file allows triggers to be defined in the config file;
+# It is an implementation using trigger_cc.py
+
 """Triggers, for actions tied to TeamTalk server events.
 
 Copyright (C) 2011-2015 Doug Lee
