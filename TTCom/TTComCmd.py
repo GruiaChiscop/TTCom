@@ -136,7 +136,8 @@ class Servers(dict):
 			self.logstream.flush()
 
 	def add(self, newServer):
-		"""Add a new server.
+		"""
+			Add a new server; takes a server object.
 		"""
 		self[newServer.shortname] = newServer
 		newServer.logstream = self.logstream
