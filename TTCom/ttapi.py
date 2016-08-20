@@ -3,7 +3,7 @@
 Author:  Doug Lee
 Credits to Chris Nestrud and Simon Jaeger for some ideas and a bit of code.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011- Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -21,7 +21,7 @@ with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 from time import sleep
-import socket
+import re, socket
 import threading
 from attrdict import AttrDict
 from parmline import ParmLine
@@ -337,9 +337,10 @@ class TeamtalkServer(object):
 		self.shortname = shortname
 		self.verNotify = False
 		self.autoLogin = 0
+		parms["clientname"] = "TTCom"
+		parms["version"] = self.parent.version
 		parms.setdefault("tcpport", "10333")
 		parms.setdefault("udpport", parms["tcpport"])
-		parms.setdefault("version", "TTCom")
 		# Teamtalk 4.3 clients pop up an error like this if there is
 		# no nickname= parameter on the login command line:
 		#	An error occurred while perform a requested command:
@@ -767,6 +768,52 @@ class TeamtalkServer(object):
 		lines.insert(0, "Users %d, active channels %d:" % (nusers, nchannels))
 		self.output("\n".join(lines))
 
+	def summarizeVersions(self):
+		"""Summarize users by TeamTalk client version and client name on this server.
+		This current user is omitted.
+		"""
+		if self.state != "loggedIn":
+			state = self.state
+			if self.conn and self.conn.state and self.conn.state != self.state:
+				state += "/" +self.conn.state
+			self.output(state)
+			return
+		users = filter(lambda u: u.userid != self.me.userid, self.users.values())
+		if not len(users):
+			self.output("No users are connected.")
+			return
+		versions = {}
+		for user in users:
+			version = user.get("version")
+			if version is None: version = ""
+			client = user.get("clientname")
+			if client is None: client = ""
+			version = " ".join([version, client]).strip()
+			versions.setdefault(version, set())
+			versions[version].add(self.nonEmptyNickname(user))
+		lines = []
+		nversions = 0
+		nusers = 0
+		for version in sorted(versions):
+			people = list(versions[version])
+			people.sort(key=lambda p: p.lower())
+			n = len(people)
+			nusers += n
+			if version:
+				nversions += 1
+				lines.append("    %s (%d): %s" % (
+					version,
+					n,
+					", ".join(people)
+				))
+			else:
+				lines.append("    %d without version or clientname: %s" % (
+					n,
+					", ".join(people)
+				))
+		lines.insert(0, "Users %d, versions/clients %d:" % (nusers, nversions))
+		self.output("\n".join(lines))
+
 	def subBitNames(self):
 		"""Return a list of bit names for sublocal and subpeer.
 		"""
@@ -871,16 +918,22 @@ class TeamtalkServer(object):
 			addr,port = udpaddr.split(":", 1)
 		return addr,port
 
-	def makeTTString(self, userInfo=None, cid=None):
+	def makeTTString(self, userInfo=None, cid=None, verGiven=None):
 		"""Make a string that can be saved as a .tt file.
 		userInfo, if passed, is a dict containing username and password keys.
 		cid, if passed, is a string or integer channelid to join.
+		verGiven, if passed, is the intended TeamTalk client version (i.e., "5.1").
 		Returns the string formed.
 		Requires an active and logged-in server connection.
 		"""
-		ver = self.info.version
-		if ver < "5.0": ver = "4.0"
-		else: ver = "5.0"
+		if verGiven: ver = verGiven
+		else:
+			ver = self.info.version
+			if ver < "5.0": ver = "4.0"
+			else:
+				try: ver = re.sub(r'(\d\.\d)\..*', r'\1', ver)
+				except: ver = ""
+			if not ver: ver = "5.0"
 		tmpl = (
 """<?xml version="1.0" encoding="UTF-8" ?>
 <teamtalk version="%(ver)s">
@@ -1169,7 +1222,18 @@ class TeamtalkServer(object):
 		):
 			#self.errorFromEvent("WARNING: null UDP address, XP clients will freeze briefly.")
 			pass
+		self.reportRightsIssues()
 		return True
+
+	def reportRightsIssues(self):
+		"""Report user rights values that could compromise use of this program on a server.
+		"""
+		try: rights = int(self.me["userrights"])
+		except KeyError: return
+		if not (rights & 0x1):
+			self.errorFromEvent("Warning: Multiple logins disallowed")
+		if not (rights & 0x2):
+			self.errorFromEvent("Warning: Unable to see channel participants")
 
 	def event_loggedin(self, parms):
 		"""Sent when a user successfully logs into the server.
@@ -1383,20 +1447,29 @@ class TeamtalkServer(object):
 		except for broadcast messages and intercepts.
 		Typing start/stop events (TT 4.3+ non-Classic) also go through here.
 		"""
+		msg = self.formattedMessage(parms)
+		if msg: self.outputFromEvent(msg)
+		return True
+
+	def formattedMessage(self, parms):
+		"""Return a formatted (for speaking or printing) version of an incoming message.
+		Supports user, channel, and broadcast messages, intercepts, and typing indicators.
+		"""
+		msg = ""
 		mtype = parms.type
-		content = parms.content.replace('\\r\\n', '\r\n')
+		content = parms.content.replace(r'\r\n', '\r\n')
 		if mtype == "1":
 			# User message.
 			this = self.me.userid
 			if parms.destuserid == this:
 				# No need to report the destuserid when it's me.
-				self.outputFromEvent("User message from %s:\n%s" % (
+				msg = ("User message from %s:\n%s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					content
 				))
 			else:
 				# This must come from a user message intercept.
-				self.outputFromEvent("User message from %s to %s:\n%s" % (
+				msg = ("User message from %s to %s:\n%s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					self.nonEmptyNickname(self.users[parms.destuserid]),
 					content
@@ -1407,31 +1480,32 @@ class TeamtalkServer(object):
 			if this and parms.channelid == this:
 				# We shouldn't need to report the channel name,
 				# because a user can't be in more than one at once anyway.
-				self.outputFromEvent("Channel message from %s:\n%s" % (
+				msg = ("Channel message from %s:\n%s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					content
 				))
 			else:
 				# This must come from a channel message intercept.
-				self.outputFromEvent("Channel message from %s to %s:\n%s" % (
+				msg = ("Channel message from %s to %s:\n%s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					parms.channel,
 					content
 				))
 		elif mtype == "3":
 			# Broadcast message.
-			self.outputFromEvent("*** Broadcast message from %s:\n%s" % (
+			msg = ("*** Broadcast message from %s:\n%s" % (
 				self.nonEmptyNickname(self.users[parms.srcuserid]),
 				content
 			))
 		elif mtype == "4":
 			# User typing start/stop message (TT 4.3+ non-Classic).
 			# Format: typing\r\n{0|1}, 1=typing and 0=stopped.
+			content = content.replace('\r\n', ' ')
 			content = content.replace(r'\r\n', ' ')
 			this = self.me.userid
 			if parms.destuserid == this:
 				# No need to report the destuserid when it's me.
-				self.outputFromEvent("User %s %s" % (
+				msg = ("User %s %s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					content
 				))
@@ -1439,17 +1513,17 @@ class TeamtalkServer(object):
 				# This must come from a user message intercept.
 				# In TT 4.3, these seem not to be sent to interceptors,
 				# but the code is here in case that's ever supported.
-				self.outputFromEvent("User %s %s to %s" % (
+				msg = ("User %s %s to %s" % (
 					self.nonEmptyNickname(self.users[parms.srcuserid]),
 					content,
 					self.nonEmptyNickname(self.users[parms.destuserid])
 				))
 		else:
 			# Unknown message type, just dump it all.
-			self.outputFromEvent("messagedeliver %s" % (" ".join(
+			msg = ("messagedeliver %s" % (" ".join(
 				[k+"="+v for k,v in parms.items()]
 			)))
-		return True
+		return msg
 
 	def event_joined(self, parms):
 		"""Sent when this user joins a channel.

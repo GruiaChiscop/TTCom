@@ -1,6 +1,6 @@
 """TTCom configuration class.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011-2016 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the

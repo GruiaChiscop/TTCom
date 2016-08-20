@@ -1,7 +1,7 @@
 """ParmLine - an object for managing dual-format parameter lines.
 Lines can come in as a text line, an event and parameters, or a mixture.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011- Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -18,7 +18,7 @@ with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """
 
-import re
+import shlex, re
 from attrdict import AttrDict
 
 class ParmLine(object):
@@ -74,57 +74,39 @@ class ParmLine(object):
 			- The first parameter is a keyword with no value assignment.
 			- All other parameters are of the form keyword=value.
 		"""
-		event = None
+		parts = shlex.split(line.strip())
+		if not parts: return None,AttrDict()
+		event = parts.pop(0)
+		if "=" in event:
+			raise ValueError("No event keyword")
 		parms = AttrDict()
-		parm = ""
-		quoting = False
-		line = line.strip() +" "
-		linelen = len(line)
-		i = 0
-		while i < linelen:
-			ch = line[i]
-			i += 1
-			if ch == '"':
-				quoting = not quoting
-				continue
-			if ch == '\\' and i < linelen-1:
-				ch = line[i]
-				i += 1
-			if quoting or not ch.isspace():
-				parm += ch
-				continue
-			# A parameter has ended.
-			if event:
-				if not parm: continue
-				try: k,v = parm.split("=", 1)
-				except ValueError:
-					print "Parameter format error: %s, line: %s" % (parm, line)
-					raise
-				parms[k] = v
-			else:
-				event = parm
-			parm = ""
+		for part in parts:
+			if "=" in part: k,v = part.split("=", 1)
+			else: k,v = (part,None)
+			parms[k] = v
 		return event,parms
 
 	def makeline(self, event, parms):
 		"""Build a line from event name and parms.
 		Inverse of splitline().
 		"""
-		line = self._fixParm(event)
+		line = event
 		for k,v in parms.items():
-			line += " %s=" % (self._fixParm(k))
-			v = str(v)
 			v = self._fixParm(v, True)
-			if v.isdigit():
-				line += v
-			else:
-				line += '"' +v +'"'
+			line += " %s=%s" % (k, v)
 		return line
 
-	def _fixParm(self, parm, noQuoting=False):
+	def _fixParm(self, parm, quoteStrings=False):
 		"""Fix up parms, events, etc., for makeline().
 		"""
-		parm = parm.replace('"', '\\"').replace('\\', '\\\\')
+		if str(parm).isdigit() and " " not in str(parm): return str(parm)
+		if parm is None:
+			if quoteStrings: return '""'
+			else: return ""
+		try: parm = parm.encode("unicode_escape", "xmlcharrefreplace")
+		except UnicodeDecodeError: pass
+		parm = parm.replace('"', r'\"').replace(r"\'", "'")
+		if quoteStrings: parm = '"' +parm +'"'
 		return parm
 
 	def __str__(self):

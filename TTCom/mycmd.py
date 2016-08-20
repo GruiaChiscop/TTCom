@@ -1,6 +1,6 @@
-"""Command-line support class.
+"""MyCmd, cmd wrapper with more features for console-style applications.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011-2016 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -17,7 +17,7 @@ with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """
 
-import os, sys, subprocess, time, re
+import os, sys, subprocess, time, re, shlex, tempfile
 from cmd import Cmd
 import threading
 
@@ -40,8 +40,16 @@ class MyCmd(Cmd):
 	The following commands are defined already:
 		EOF, quit, exit:  Exit the interpreter. Run() returns.
 		clear, cls:  Clear the screen if possible.
+		errTrace: Print a traceback of the latest error encountered.
 	The following utility methods are defined for easing command implementation:
+		getargs: Parse line into args.
 		msg: Print all passed arguments through the right output channel.
+		msgNoTime: Like msg but avoids printing timestamps if otherwise printing.
+		msgFromEvent: Msg version intended for asynchronous event output.
+		dequote: Remove starting and ending quotes on a line if present (rarely needed).
+		msgError: Msg only intended for error message output.
+		confirm: Present a Yes/No confirmation prompt.
+		raw_input_withoutHistory: raw_input that tries not to include its input in readline history.
 		getMultilineValue:  Get a multiline value ending with "." on its own line.
 		linearList:  Print a list value nicely and with a name.
 			Items are sorted (case not significant) and wrapped as necessary.
@@ -244,35 +252,80 @@ class MyCmd(Cmd):
 			self.msg("Please enter y or n.")
 			l = ""
 
-	def selectMatch(self, matches, prompt=None, ftran=lambda m: m):
+	def selectMatch(self, matches, prompt=None, ftran=lambda m: m, allowMultiple=False):
 		"""
 		Return a match from a set.
 		matches: The set of matches to consider.
 		prompt: The prompt to print above the match list.
 		ftran: The function on a match to make it into a string to print.
+		allowMultiple: If True, lets the user enter multiple numbers and returns a list of matches.
 		"""
 		mlen = len(matches)
 		if mlen == 0: raise KeyError("No matches found")
-		if mlen == 1: return matches[0]
+		if mlen == 1:
+			if allowMultiple: return [matches[0]]
+			else: return matches[0]
 		if ftran:
 			ft1 = ftran
-			ftran = lambda x: unicode(ft1(x), "ascii", "replace")
+			#ftran = lambda x: unicode(ft1(x), "ascii", "replace")
 		matches = sorted(matches, key=ftran)
 		mlist = [unicode(i+1) +" " +ftran(match) for i,match in enumerate(matches)]
-		if not prompt: prompt = "Select an option:"
+		if not prompt:
+			if allowMultiple: prompt = "Select one or more options:"
+			else: prompt = "Select an option:"
 		m = prompt +"\n   " +"\n   ".join(mlist)
 		self.msg(m)
+		if allowMultiple: prompt = "Selection (or Enter to cancel): "
+		else: prompt = "Selections (or Enter to cancel): "
 		l = ""
 		while not l:
-			l = raw_input_withoutHistory("Selection (or Enter to cancel): ")
+			l = raw_input_withoutHistory(prompt)
 			l = l.strip()
 			if not l: break
+			if allowMultiple:
+				try: return self._collectSelections(matches, l)
+				except [IndexError, SyntaxError]:
+					# Error message printed by _collectSelections().
+					l = ""
+					continue
 			try:
 				if l and int(l): return matches[int(l)-1]
 			except IndexError:
 				self.msg("Invalid index number")
 				l = ""
 		raise ValueError("No option selected")
+
+	def _collectSelections(self, matches, l):
+		"""
+		Return the matches selected by l. Supported syntax examples (numbers are 1-based):
+			9: Just the 9th match.
+			2,5 or 2 5 or 2, 5: Matches 2 and 5.
+			2-5 or 2..5: Matches 2 3 4 and 5.
+			2-5, 9 etc.: Matches 2 through 5 and 9.
+		"""
+		# First some syntactic simplifications.
+		# Comma/space combos become a single comma.
+		l = re.sub(r'[ \t,]+', r',', l)
+		# .. becomes -
+		l = re.sub(r'\.\.', '-', l)
+		indices = set()
+		# Now make units, each being an index or a range.
+		units = l.split(',')
+		for unit in units:
+			if "-" in unit:
+				start,end = unit.split("-")
+			else:
+				start,end = unit,unit
+			start = int(start)
+			end = int(end)
+			if start < 1 or start > len(matches): 
+				m = "%d is not a valid index" % (start)
+				raise IndexError(m)
+			if end < 1 or end > len(matches): 
+				m = "%d is not a valid index" % (end)
+				raise IndexError(m)
+			indices.update(range(start-1, end))
+		return [matches[i] for i in sorted(indices)]
 
 	def msgNoTime(self, *args):
 		kwargs = {"noTime": True}
@@ -281,7 +334,7 @@ class MyCmd(Cmd):
 	def msgFromEvent(self, *args):
 		kwargs = {"fromEvent": True}
 		speakEvents = 0
-		try: speakEvents = self.speakEvents
+		try: speakEvents = int(self.speakEvents)
 		except: pass
 		if speakEvents != 0:
 			mq_vo.extend(args)
@@ -343,73 +396,55 @@ class MyCmd(Cmd):
 	def linearList(self, name, l, func=lambda e: unicode(e)):
 		"""
 		List l on a (possibly long and wrap-worthy) line.
-		Null elements are removed.  If you don't want this, send in a func that avoids the issue.
+		The line begins with a header with name and entry count.
+		Null elements are removed.  If you don't want this, send in a func that doesn't return null for any entry.
 		"""
 		l1 = sorted(filter(None, map(func, l)), key=lambda k: k.lower())
 		if len(l) == 0:
-			return "%3d %s." % (0, name)
-		return "%3d %s: %s." % (len(l1), name, ", ".join(l1))
+			return "%s: 0" % (name)
+		return "%s (%0d): %s." % (name, len(l1), ", ".join(l1))
 
-	def getargs(self, line, count=sys.maxint):
+	def lineList(self, name, l, func=lambda e: unicode(e)):
+		"""
+		List l one line per entry, indented below a header with name and entry count.
+		Null elements are removed.  If you don't want this, send in a func that doesn't return null for any entry.
+		"""
+		l1 = sorted(filter(None, map(func, l)), key=lambda k: k.lower())
+		if len(l) == 0:
+			return "%s: 0" % (name)
+		return "%s (%0d):\n    %s." % (name, len(l1), "\n    ".join(l1))
+
+	def getargs(self, line, count=0):
 		"""
 		Parse the given line into arguments and return them.
+		Args are dequoted unless count is non-zero and less than the number of arguments.
+		In that case, all but the last arg are dequoted.
+		Parsing rules are those used by shlex in Posix mode.
 		"""
-		args = []
-		line = line.strip()
-		if not line:
-			return []
-		line += "\n"  # simplifies the loop below a bit.
-		qt = ""
-		escOne = False
-		arg = ""
-		i = -1
-		for ch in line:
-			i += 1
-			if count <= 0:
-				line = line[i:].strip()
-				line = self.dequote(line)
-				if line: args.append(line)
-				return args
-			if escOne:
-				# A backslash is in effect.
-				arg += ch
-				escOne = False
-				continue
-			elif ch == "\\":
-				# A backslash will apply to the next character.
-				escOne = True
-				continue
-			elif not qt and ch in ["'", '"']:
-				# A quote is starting.
-				qt = ch
-				continue
-			elif qt and ch == qt:
-				# A quote is ending.
-				qt = ""
-				continue
-			elif qt:
-				# A quote is in effect.
-				arg += ch
-				continue
-			elif ch in " \t\n":
-				# An argument splitter.
-				args.append(arg)
-				arg = ""
-				count -= 1
-			else:
-				# No quoting is in effect.
-				arg += ch
-		# The last \n is ignored; we put it there anyway.
-		if qt:
-			raise SyntaxError("Missing " +qt +".")
+		# shlex.split dequotes internally.
+		if not count or count >= len(line): return shlex.split(line)
+		args = shlex.split(line)
+		if len(args) < count: return args
+		# Dequoted args up to but not including the last.
+		args = args[:count-1]
+		# Collect args without dequoting into the last one, then append it.
+		tokenizer = shlex.shlex(line)
+		[tokenizer.next() for i in range(0, count-1)]
+		lastArg = " ".join([t for t in tokenizer])
+		print "LastArg: " +lastArg
+		args.append(lastArg)
 		return args
 
 	def dequote(self, line):
 		"""Remove surrounding quotes (if any) from line.
+		Also unescapes the quote removed if found inside the remaining string.
 		"""
 		if not line: return line
-		if line[0] == line[-1] and line[0] in ["'", '"']:
+		if (line[0] == line[-1] and line[0] in ["'", '"']
+		and len(shlex.split(line)) == 1):
+			q = line[0]
 			line = line[1:-1]
+			line = line.replace('\\'+q, q)
 		return line
 
 # Input helpers.
@@ -563,13 +598,14 @@ def say(*args):
 	if (plat == "cygwin" or plat.startswith("win")) and SayTools:
 		sys.coinit_flags = 0
 		pythoncom.CoInitialize()
-		try: SayTools.Say(s.encode("UTF-8"))
+		try: SayTools.Say(s)
 		except: print __main__.err()
 		pythoncom.CoUninitialize()
 	elif plat == "darwin": # MacOS
-		tmpfile = os.tempnam()
+		fd,tmpfile = tempfile.mkstemp(suffix=".aiff")
+		os.close(fd)
 		cmd = ["say", "-o", tmpfile]
-		subprocess.Popen(cmd, stdin=subprocess.PIPE).communicate(s.encode("UTF-8"))
+		subprocess.Popen(cmd, stdin=subprocess.PIPE).communicate(s)
 		cmd = ["afplay", tmpfile]
 		subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).communicate()
 		try: os.remove(tmpfile)

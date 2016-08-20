@@ -1,9 +1,6 @@
-# This file allows triggers to be defined in the config file;
-# It is an implementation using trigger_cc.py
-
 """Triggers, for actions tied to TeamTalk server events.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011- Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the

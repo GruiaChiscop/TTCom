@@ -1,6 +1,6 @@
 """Command implementation module for TTCom.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011-2016 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -136,8 +136,7 @@ class Servers(dict):
 			self.logstream.flush()
 
 	def add(self, newServer):
-		"""
-			Add a new server; takes a server object.
+		"""Add a new server.
 		"""
 		self[newServer.shortname] = newServer
 		newServer.logstream = self.logstream
@@ -153,8 +152,9 @@ class Servers(dict):
 		del self[shortname]
 
 class TTComCmd(MyCmd):
+	version = "1.4"
 	conf = Conf("ttcom.conf")
-	speakEvents = property(lambda: conf.option("speakEvents"), None, None, "Whether to speak events")
+	speakEvents = property(lambda self: self.conf.option("speakEvents"), None, None, "Whether to speak events")
 
 	def __init__(self, noAutoLogins=False, logins=[]):
 		if logins:
@@ -362,7 +362,7 @@ class TTComCmd(MyCmd):
 		"""
 		return (
 """TeamTalk Commander (TTCom)
-Copyright (c) 2011-2015 Doug Lee.
+Copyright (c) 2011-2016 Doug Lee.
 
 This program is covered by version 3 of the GNU General Public License.
 This program comes with ABSOLUTELY NO WARRANTY.
@@ -372,13 +372,19 @@ See the file LICENSE.txt for further information.
 The iniparse module is under separate license and copyright;
 see that file for details.
 
-TTCom version 1.2
-""".strip())
+TTCom version %ver%
+""".strip()).replace("%ver%", self.version)
 
 	def do_version(self, line=""):
 		"""Show the version information for TTCom.
 		"""
 		self.msg(self.versionString())
+
+	def do_vlist(self, line=""):
+		"""List users sorted by TeamTalk client version number and client name.
+		"""
+		server = self.curServer
+		server.summarizeVersions()
 
 	def do_server(self, line):
 		"""Get or change the server to which subsequent commands will apply,
@@ -390,7 +396,7 @@ TTCom version 1.2
 		With more arguments, runs command against a server without
 		changing the current one.
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
 		newServer = None
 		if len(args) >= 1:
 			newServer = self.serverMatch(args.pop(0))
@@ -516,7 +522,7 @@ TTCom version 1.2
 		a slash, in which case it is used verbatim, so that new
 		channels can be created and joined with this command.
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
 		channel,password = "",""
 		if args: channel = args.pop(0)
 		if args: password = args.pop(0)
@@ -601,7 +607,7 @@ TTCom version 1.2
 		means move doug, Bill Cosby, and everyone in main to away,
 		where "main" and "away" are contained in channel names on the server.
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
 		if not args: raise SyntaxError("No user(s) or channel specified")
 		if len(args) < 2: raise SyntaxError("At least one user and a channel are required")
 		users = []
@@ -634,7 +640,7 @@ TTCom version 1.2
 		Usage: cmsg <channelname> <message>
 		Also used internally to implement the stats command.
 		"""
-		args = self.getargs(line, 1)
+		args = line.split(None, 1)
 		if len(args) < 2:
 			raise SyntaxError("A channel name and a message must be specified")
 		channel = self.channelMatch(args[0])
@@ -652,7 +658,7 @@ TTCom version 1.2
 	def _handleSubscriptions(self, isIntercept, line):
 		"""Does the work for do_subscribe and do_intercept.
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
 		if len(args) < 1:
 			raise SyntaxError("A user must be specified")
 		user = self.userMatch(args.pop(0))
@@ -738,14 +744,15 @@ TTCom version 1.2
 		"""Send a message to a user.
 		Usage: umsg <user> <message>
 		"""
-		args = self.getargs(line, 1)
+		args = line.split(None, 1)
 		if len(args) < 2:
 			raise SyntaxError("A user and a message must be specified")
 		user = self.userMatch(args[0])
-		self.do_send('message type=1 destuserid="%s" content="%s"' % (
-			user.userid,
-			args[1]
-		))
+		self.do_send(ParmLine("message", {
+			"type": 1,
+			"destuserid": user.userid,
+			"content": args[1]
+		}))
 
 	def do_stats(self, line=""):
 		"""Show statistics for a server.
@@ -956,9 +963,18 @@ TTCom version 1.2
 
 	def do_tt(self, line):
 		"""Create a .tt file for a user account.
-		Usage: tt ttFileName [userName [channelToJoin]]
+		Usage: tt [clientVersion] ttFileName [userName [channelToJoin]]
+		If no clientVersion is given, the current server's version is used.
+		Adding a userName includes the user's login and password credentials in the generated file.
+		Adding a channelToJoin makes the tt file cause the user to land in the given channel on login.
 		"""
-		args = self.getargs(line)
+		args = shlex.split(line)
+		verGiven = None
+		try:
+			verGiven = (float(args[0]) > 0.0)
+			if verGiven: verGiven = args.pop(0)
+		except IndexError: verGiven = None
+		except ValueError: verGiven = None
 		if not args:
 			raise SyntaxError("Must specify a .tt file name to generate")
 		fname = args.pop(0)
@@ -983,7 +999,7 @@ TTCom version 1.2
 			cid = self.channelMatch(channel).channelid
 		else:
 			cid = None
-		tt = self.curServer.makeTTString(acct.parms, cid)
+		tt = self.curServer.makeTTString(acct.parms, cid, verGiven)
 		with open(fname, "w") as f:
 			f.write(tt)
 
@@ -1007,11 +1023,13 @@ TTCom version 1.2
 		If name is omitted, this current user is used.
 		"""
 		line = line.strip()
+		isMe = False
 		if line:
 			user = self.userMatch(line)
 			if not user: return
 		else:
 			user = self.curServer.me
+			isMe = True
 		u = AttrDict(user.copy())
 		buf = TextBlock()
 		userid = u.pop("userid")
@@ -1042,7 +1060,11 @@ TTCom version 1.2
 		buf.add("UDP Port", udpport, True)
 		u.pop("ipaddr", "")
 		u.pop("udpaddr", "")
-		buf.add("Client Version", u.pop("version", ""))
+		cname = u.pop("clientname", "").strip()
+		cver = u.pop("version", "").strip()
+		if cname and cver: cname = "%s version %s" % (cname, cver)
+		elif cver: cname = "Version %s" % (cver)
+		buf.add("Client", cname)
 		buf.add("Packet Protocol", u.pop("packetprotocol", ""), True)
 		channelid = u.pop("channelid", "")
 		channel = u.pop("channel", "")
@@ -1078,6 +1100,7 @@ TTCom version 1.2
 		for k in sorted(u):
 			buf.add(k, u[k])
 		self.msg(str(buf))
+		if isMe: self.curServer.reportRightsIssues()
 
 	def formattedAddress(self, addr):
 		"""Return the given address with FQDN where possible.
@@ -1150,7 +1173,7 @@ TTCom version 1.2
 				act = "del"
 			else:
 				raise SyntaxError("Unknown option: %s" % (line[:2]))
-		args = self.getargs(line)
+		args = shlex.split(line)
 		# Get rid of -a or -d.
 		if act: args.pop(0)
 		if not args: raise SyntaxError("Must specify a user.")

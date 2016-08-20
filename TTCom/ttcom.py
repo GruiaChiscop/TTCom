@@ -1,6 +1,5 @@
 #! /usr/bin/env python
 
-# This module starts TTCom, giving it it's initial prompt and selecting the last server passed in the args, as well as allowing -n to disable all autologins
 """TeamTalk Commander, the multiserver TeamTalk control client.
 
 Author:  Doug Lee
@@ -12,7 +11,7 @@ this software's development.
 
 This software is released under the GPL as of September 7, 2014; see LICENSE.txt.
 
-Copyright (C) 2011-2015 Doug Lee
+Copyright (C) 2011- Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
