@@ -1,31 +1,15 @@
 #! /usr/bin/env python
 
-"""TeamTalk Commander, the multiserver TeamTalk control client.
+"""TeamTalk Commander (TTCom)
+Copyright (c) 2011-2017 Doug Lee.
 
-Author:  Doug Lee
-
-Credits to Chris Nestrud and Simon Jaeger for some ideas and a bit
-of code.  Thanks to Nick Giannak and HKC Radio for sufficient access
-and support to facilitate software testing in the early stages of
-this software's development.
-
-This software is released under the GPL as of September 7, 2014; see LICENSE.txt.
-
-Copyright (C) 2011- Doug Lee
-
-This program is free software: you can redistribute it and/or modify it
-under the terms of the GNU General Public License as published by the
-Free Software Foundation, either version 3 of the License, or (at your
-option) any later version.
-
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+This program is covered by version 3 of the GNU General Public License.
+This program comes with ABSOLUTELY NO WARRANTY.
+This is free software, and you are welcome to redistribute it under
+certain conditions.
+See the file LICENSE.txt for further information.
+The iniparse module is under separate license and copyright;
+see that file for details.
 """
 
 import sys, threading
@@ -34,6 +18,9 @@ from TTComCmd import TTComCmd
 import os, time
 
 if __name__ == "__main__":
+	from conf import conf
+	conf.name = "TTCom"
+	conf.version = "2.0.1"
 	args = sys.argv[1:]
 	# Keep args out of the cmd system.
 	del sys.argv[1:]
@@ -45,9 +32,9 @@ if __name__ == "__main__":
 		else:
 			noAutoLogins = True
 			shortnames.append(arg)
-	ttcom = TTComCmd(noAutoLogins, shortnames)
-	ttcom.allowPython()
+	app = TTComCmd(noAutoLogins, shortnames)
+	app.allowPython()
 	if shortnames:
 		cur = shortnames[-1]
-		ttcom.onecmd("server " +cur)
-	ttcom.run("TTCom> ", ttcom.versionString())
+		app.onecmd("server " +cur)
+	app.run()

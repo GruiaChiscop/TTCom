@@ -1,6 +1,6 @@
 """Command implementation module for TTCom.
 
-Copyright (C) 2011-2016 Doug Lee
+Copyright (C) 2011-2017 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -22,13 +22,13 @@ from time import sleep, ctime
 from datetime import datetime
 import os, sys, re, subprocess, socket, shlex
 import threading
-from attrdict import AttrDict
+from tt_attrdict import AttrDict
 from ttapi import TeamtalkServer
-from mycmd import MyCmd, say as mycmd_say
+from mycmd import MyCmd, say as mycmd_say, classproperty, ArgumentParser, CommandError
 from TableFormatter import TableFormatter
-from conf import Conf
+from conf import conf
 from triggers import Triggers
-from parmline import ParmLine
+from parmline import ParmLine, TTParms, KeywordParm, IntParm, StringParm, ListParm
 from textblock import TextBlock
 
 def callWithRetry(func, *args, **kwargs):
@@ -152,9 +152,10 @@ class Servers(dict):
 		del self[shortname]
 
 class TTComCmd(MyCmd):
-	version = "1.4"
-	conf = Conf("ttcom.conf")
-	speakEvents = property(lambda self: self.conf.option("speakEvents"), None, None, "Whether to speak events")
+	@classproperty
+	def speakEvents(cls):
+		"Whether to speak events."
+		return conf.option("speakEvents")
 
 	def __init__(self, noAutoLogins=False, logins=[]):
 		if logins:
@@ -184,11 +185,10 @@ class TTComCmd(MyCmd):
 
 	def readServers(self, logins=[]):
 		waitFors = []
-		for shortname,pairs in self.conf.servers().items():
+		for shortname,pairs in conf.servers().items():
 			host = ""
 			loginParms = {}
 			autoLogin = 0
-			verNotify = False
 			silent = 0
 			hidden = 0
 			triggers = Triggers(self.onecmd)
@@ -196,8 +196,6 @@ class TTComCmd(MyCmd):
 			for k,v in pairs:
 				if k.lower() == "host":
 					host = v
-				elif k.lower() == "vernotify":
-					verNotify = int(v)
 				elif k.lower() == "autologin":
 					if not int(self.noAutoLogins):
 						autoLogin = int(v)
@@ -218,8 +216,6 @@ class TTComCmd(MyCmd):
 				else:
 					loginParms[k.lower()] = v
 			newServer = MyTeamtalkServer(self, host, shortname, loginParms)
-			if verNotify:
-				newServer.verNotify = True
 			if autoLogin:
 				newServer.autoLogin = autoLogin
 			if silent:
@@ -243,9 +239,6 @@ class TTComCmd(MyCmd):
 				if oldServer.autoLogin != newServer.autoLogin:
 					print "autoLogin for %s changing to %d" % (shortname, newServer.autoLogin)
 				oldServer.autoLogin = newServer.autoLogin
-				if oldServer.verNotify != newServer.verNotify:
-					print "verNotify for %s changing to %d" % (shortname, newServer.verNotify)
-				oldServer.verNotify = newServer.verNotify
 				if oldServer.silent != newServer.silent:
 					print "silent for %s changing to %d" % (shortname, newServer.silent)
 				oldServer.silent = newServer.silent
@@ -294,9 +287,9 @@ class TTComCmd(MyCmd):
 		used. If it does not, that userid is still used in
 		case the user is logged out or invisible but still
 		connected (this can happen on servers that don't
-		allow a user to see other users unless in a channel
-		with them).
+		allow a user to see other users unless in a channel with them).
 		"""
+		# If checkAll is True, all servers' users are checked (not well tested or used).
 		if checkAll:
 			users = []
 			map(lambda s: users.extend(s.users),
@@ -318,30 +311,46 @@ class TTComCmd(MyCmd):
 			flt = lambda u1: self.curServer.nonEmptyNickname(u1, True)
 		return self.selectMatch(users, "Select a User", flt)
 
-	def channelMatch(self, c):
+	def channelMatch(self, c, noPrompt=False):
 		"""Match a channel to what was typed/passed, asking for a
-		selection if necessary. Returns a channel object.
-		The passed string is checked for containment in the channel name.
+		selection if necessary and allowed by the caller. Returns a channel object.
+		If the channel spec given includes an equal sign (=), a channel is selected by property; e.g., chanid=5.
+		Otherwise the passed string is checked for containment in the channel name.
 		If c contains a slash (/), the full name is checked;
 		otherwise just the final component of channel names are checked.
 		A channel name of "/" always matches just the root channel (channelid 1).
 		A channel name starting and ending with "/" must match a
-		channel exactly.
+		channel exactly, except for case.
+		If noPrompt is passed and True, a KeyError is thrown if more than one channel matches.
 		"""
 		channels = self.curServer.channels
-		if c.startswith("/") and c.endswith("/"):
+		if c == "/":
 			return channels["1"]
-		if "/" in c:
-			channels = channels.values()
+		elif c.startswith("/") and c.endswith("/"):
+			# Exact match (except for case) required.
+			channels = filter(lambda c1:
+				c.lower() == self.curServer.channelname(c1["channelid"]).lower()
+			, channels.values())
+		elif "=" in c:
+			# Specific parameter search like chanid=5.
+			channels = filter(lambda chan: self.filterPasses(chan, [c]), channels.values())
+		elif "/" in c:
+			# Containment match against full channel paths, case ignored.
+			channels = filter(lambda c1:
+				c.lower() in self.curServer.channelname(c1["channelid"]).lower()
+			, channels.values())
 		else:
-			# This filters on match against final channel path component,
-			# except the final "/" is ignored.
+			# Match against channel names (no paths), case and final / ignored.
 			channels = filter(lambda c1:
 				c.lower() in self.curServer.channelname(c1["channelid"])[:-1].rpartition("/")[2].lower()
 			, channels.values())
-		return self.selectMatch(channels, "Select a Channel",
-			lambda c1: self.curServer.channelname(c1["channelid"])
-		)
+		# selectMatch handles the 0 and 1 match cases properly without prompting.
+		if not noPrompt or len(channels) <= 1:
+			return self.selectMatch(channels, "Select a Channel",
+				lambda c1: self.curServer.channelname(c1["channelid"])
+			)
+		# Too many matches when we can't prompt for a selection.
+		raise CommandError("Error: More than one channel matched")
 
 	def serverMatch(self, s):
 		"""Match a server to what was typed/passed, asking for a
@@ -362,7 +371,7 @@ class TTComCmd(MyCmd):
 		"""
 		return (
 """TeamTalk Commander (TTCom)
-Copyright (c) 2011-2016 Doug Lee.
+Copyright (c) 2011-2017 Doug Lee.
 
 This program is covered by version 3 of the GNU General Public License.
 This program comes with ABSOLUTELY NO WARRANTY.
@@ -373,18 +382,59 @@ The iniparse module is under separate license and copyright;
 see that file for details.
 
 TTCom version %ver%
-""".strip()).replace("%ver%", self.version)
+""".strip()).replace("%ver%", conf.version)
 
-	def do_version(self, line=""):
-		"""Show the version information for TTCom.
+	def do_about(self, line=""):
+		"""Show the copyright and version information for TTCom.
 		"""
 		self.msg(self.versionString())
 
-	def do_vlist(self, line=""):
-		"""List users sorted by TeamTalk client version number and client name.
+	def do_version(self, line=""):
+		"""Shows the version of the currently selected server when connected.
+		With an argument, shows the version of the indicated user's client, and client name if available.
 		"""
+		line = line.strip()
 		server = self.curServer
-		server.summarizeVersions()
+		if not line:
+			try: sver = server.info.version
+			except: pass
+			if not sver:
+				raise CommandError("Server {0} version not available".format(server.shortname))
+			self.msg("{0} server version {1}".format(server.shortname, sver))
+			if server.state != "loggedIn":
+				self.msg("Warning: Not logged in, version information may be out of date.")
+			return
+		# Client indicated.
+		user = self.userMatch(line)
+		if not user: return
+		cname = user.get("clientname").strip()
+		cver = user.get("version").strip()
+		if cname and cver: cname = "%s version %s" % (cname, cver)
+		elif cver: cname = "Version %s" % (cver)
+		cname = "{0}:\n    {1}".format(
+			self.curServer.nonEmptyNickname(user),
+			cname
+		)
+		self.msg(cname)
+
+	def do_vlist(self, line=""):
+		"""List users sorted by TeamTalk packet protocol, client version number, and client name.
+		-p[<num>] filter: -p0 means text-only clients, -p means voice-capable clients, -p<num> restricts to a particular packetprotocol.
+		(TT5 supports only packetprotocol 1 at this time; TT4 supported several.)
+		"""
+		proto = None
+		if line:
+			if not line.startswith("-p"):
+				self.msg("Unknown options: " +line)
+				return
+			line = line[2:].strip()
+			if not line: proto = -1
+			elif line.isdigit(): proto = int(line)
+			else:
+				self.msg("Unknown packet protocol number: " +line)
+				return
+		server = self.curServer
+		server.summarizeVersions(proto)
 
 	def do_server(self, line):
 		"""Get or change the server to which subsequent commands will apply,
@@ -406,9 +456,11 @@ TTCom version %ver%
 			return
 		# A command to run against a specific server (newServer).
 		oldServer = self.curServer
+		# Reparse to avoid spacing issues.
+		tmp,line = line.split(None, 1)
 		try:
 			self.curServer = newServer
-			self.onecmd(" ".join(args))
+			self.onecmd(line)
 		finally:
 			self.curServer = oldServer
 
@@ -518,16 +570,17 @@ TTCom version %ver%
 		"""Join a channel.
 		Usage: join channelname [password]
 		channelname and/or password can contain spaces if quoted.
-		The channel name is checked for matches unless it starts and ends with
-		a slash, in which case it is used verbatim, so that new
-		channels can be created and joined with this command.
+		Channel / always refers to the root channel.
+		A channel starting and ending with / must match exactly except for letter casing.
+		A channel containing a / is matched against all full channel names (path included).
+		Otherwise the channel is matched against only the actual channel names, without paths.
+		This command will not create temporary channels as was once true in TeamTalk 4.
 		"""
 		args = shlex.split(line)
 		channel,password = "",""
 		if args: channel = args.pop(0)
 		if args: password = args.pop(0)
-		if channel == "/" or not (channel.startswith("/") and channel.endswith("/")):
-			channel = self.channelMatch(channel)
+		channel = self.channelMatch(channel)
 		if self.curServer.is5():
 			self.do_send('join chanid=%s password="%s"' % (channel.chanid, password))
 		else:
@@ -549,7 +602,7 @@ TTCom version %ver%
 		else:
 			self.do_send('leave channel="' +ch.channel +'"')
 
-	def do_nick(self, line):
+	def do_nickname(self, line):
 		"""Set a new nickname or check the current one.
 		"""
 		if line:
@@ -590,7 +643,7 @@ TTCom version %ver%
 		even those who are currently not in a channel. The message
 		shows up in the main message window for each user.
 		Example usage: Broadcast Server going down in five minutes.
-		This command requires admin privileges on the server.
+		This command requires the Broadcast user right on TT5 servers and admin privileges on TT4 servers.
 		"""
 		if not line:
 			print "No broadcast message specified."
@@ -606,6 +659,7 @@ TTCom version %ver%
 		Example: move doug "bill cosby" @main" away
 		means move doug, Bill Cosby, and everyone in main to away,
 		where "main" and "away" are contained in channel names on the server.
+		This command requires the Move user right on TT5 servers and admin privileges on TT4 servers.
 		"""
 		args = shlex.split(line)
 		if not args: raise SyntaxError("No user(s) or channel specified")
@@ -638,7 +692,6 @@ TTCom version %ver%
 	def do_cmsg(self, line):
 		"""Send a message to a channel.
 		Usage: cmsg <channelname> <message>
-		Also used internally to implement the stats command.
 		"""
 		args = line.split(None, 1)
 		if len(args) < 2:
@@ -665,7 +718,10 @@ TTCom version %ver%
 		firstBit = 1
 		typename = "Subscriptions"
 		if isIntercept:
-			firstBit = 256
+			if self.curServer.is5():
+				firstBit = 65536
+			else:
+				firstBit = 256
 			typename = "Intercepts"
 		bitnames = self.curServer.subBitNames()
 		subs = 0
@@ -772,62 +828,96 @@ TTCom version %ver%
 
 	def do_kick(self, line):
 		"""Kick a user by name or ID.
+		This command requires the Kick user right on TT5 servers and admin privileges on TT4 servers.
 		"""
 		self.userAction("kick", line)
 
 	def do_ban(self, line):
-		"""Ban a user by name or ID,
-		unban a user by IP address or current name or ID,
-		or list current bans.
-		A ban does not also kick; see kb for this.
-		Usages:
-			ban: Lists all bans.
-			ban spec: List bans matching spec.
-			ban -a userSpec: Ban the user matching userSpec.
-			ban -d userSpec: Unban the user matching userSpec.
+		"""Ban management. Requires admin privileges or the Ban right under TT5.
+		Run without arguments for a list of subcommands, or type a subcommand and -h for help with that subcommand.
+		Example: ban list -h.
 		"""
-		line = line.strip()
-		# First handle the list-only cases (ban and ban spec).
-		if not line or not line.startswith("-"):
-			bans = self.getBans()
-			if line:
-				bans = filter(lambda b: line in b.line, bans)
-			tbl = TableFormatter("User Bans", [
-				"Username", "Nickname", "IP Address", "Time", "Channel"
-			])
-			for b in bans:
-				parms = b.parms
-				tbl.addRow([
-					parms.username, parms.nickname,
-					parms.ipaddr,
-					ctime(float(parms.bantime)),
-					parms.channel
-				])
-			self.msg(tbl.format(2))
-			return
-		# ban -a and ban -d remain.
-		opt,line = line[:2], line[2:].strip()
-		if opt not in ["-a", "-d"]:
-			raise SyntaxError("Unknown option: %s" % (opt))
-		if opt == "-a":
-			# Add a ban.
-			self.userAction("ban", line)
-			return
-		# Del is all we have left.
-		if not line:
-			raise SyntaxError("Must specify a user or IP address")
+		args = TTParms(line, True)
+		self.dispatchSubcommand("ban_", args)
+
+	def ban_list(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="ban list", description="List all or selected bans.", epilog="Examples: ban list, ban li bob, ban li 24.114., ban li channel=/, ban li !nickname=Bob")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific field, or just value to match against any field. Fields include bantime, username, nickname, ipaddr, and channel. More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces.')
+		opts = parser.parse_args(args)
 		bans = self.getBans()
-		if not bans: raise ValueError("No bans found")
-		bans = filter(lambda b: line.lower() in b.line.lower(), bans)
-		ban = self.selectMatch(bans, "Select a Ban To Remove")
-		ban = ParmLine(ban)
-		self.do_send('unban ipaddr="%s"' % (ban.parms.ipaddr))
+		if opts.filter: ttl = "Matching Bans"
+		else: ttl = "Bans"
+		parmsets = []
+		for ban in bans:
+			parms = ban.parms
+			if not self.filterPasses(parms, opts.filter, True): continue
+			parmsets.append(parms)
+		tbl = TableFormatter(ttl, [
+			"Username", "Nickname", "IP Address", "Time", "Channel"
+		])
+		for parms in parmsets:
+			tbl.addRow([
+				parms.username, parms.nickname,
+				parms.ipaddr,
+				ctime(float(parms.bantime)),
+				parms.channel
+			])
+		self.msg(tbl.format(2))
+
+	def ban_add(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="ban add", description="Add a new ban (does not also kick; see kb for this)", epilog="Examples: ban add bob, ban add nickname=Bob, ban add 24.114., ban add -k 295")
+		parser.add_argument("-k", "--kick", action="store_true", help="Also kick the user(s) being banned.")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific user field, or just value to match against any field. Fields include userid, username, usertype, userdata, nickname, ipaddr, udpaddr, clientname, version, packetprotocol, statusmode, statusmsg, sublocal, and subpeer (not all of these are likely to prove useful).  More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces. As a special case, a plain integer like 295 matches an exact userid.')
+		opts = parser.parse_args(args)
+		users = self.curServer.users
+		parmsets = []
+		for user in users:
+			parms = users[user]
+			if not self.filterPasses(parms, opts.filter, True): continue
+			parmsets.append(parms)
+		flt = lambda u1: self.curServer.nonEmptyNickname(u1, True)
+		parmsets = self.selectMatch(parmsets, "Select One or More Users", flt, allowMultiple=True)
+		for user in parmsets:
+			parms = TTParms([KeywordParm("ban"),
+				IntParm("userid", user.userid)
+			])
+			self.do_send(parms)
+			if not opts.kick: continue
+			parms = TTParms([KeywordParm("kick"),
+				IntParm("userid", user.userid)
+			])
+			self.do_send(parms)
+
+	def ban_delete(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="ban delete", description="Delete all or selected bans.", epilog="Examples: ban delete, ban del bob, ban del 24.114., ban del !nickname=Bob")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific field, or just value to match against any field. Fields include bantime, username, nickname, ipaddr, and channel. More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces.')
+		opts = parser.parse_args(args)
+		bans0 = self.getBans()
+		bans = []
+		for ban in bans0:
+			if not self.filterPasses(ban.parms, opts.filter, True): continue
+			bans.append(ban.parms)
+		if not bans:
+			raise CommandError("No matching bans")
+		# Select from remaining candidates exactly which ban(s) to delete.
+		bans = self.selectMatch(bans, "Select One or More Bans To Remove", allowMultiple=True)
+		if not bans: raise CommandError("No bans selected")
+		if not self.confirm("Delete {0} bans (y/n)?".format(len(bans))): return
+		for ban in bans:
+			self.do_send(TTParms([
+				KeywordParm("unban"),
+				StringParm("ipaddr", ban.ipaddr)
+			]))
 
 	def do_kb(self, line):
 		"""Kick and ban a user by name or ID.
+		This command requires the Kick and Ban user rights on TT5 servers and admin privileges on TT4 servers.
+		This command is a shortcut for ban add -k.  See the Ban Add subcommand for further information on how to select users (type ban add -h).
 		"""
-		self.userAction("ban", line)
-		self.userAction("kick", line)
+		self.do_ban("add -k "+str(line))
 
 	def getAccounts(self):
 		"""Return the set of accounts on this server.
@@ -835,10 +925,11 @@ TTCom version %ver%
 		The keys are the usernames.
 		"""
 		accts = self.request("listaccounts")
+		# Remove the final Ok event.
 		resp = accts.pop()
 		if resp.event != "ok":
 			# TODO: This ignores any but the last response line.
-			raise ValueError(resp)
+			raise CommandError(resp)
 		d = {}
 		for acct in accts:
 			if acct.event == "ok": continue
@@ -846,126 +937,292 @@ TTCom version %ver%
 		return d
 
 	def getBans(self):
-		"""Returns the bans on this server as a list of lines.
+		"""Returns the bans on this server as a list of ParmLine objects.
 		The lines are the responses to the "listbans" command, one line per ban.
 		"""
 		bans = self.request("listbans")
 		resp = bans.pop()
 		if resp.event != "ok":
 			# TODO: This ignores any but the last response line.
-			raise ValueError(resp)
+			raise CommandError(resp)
 		return bans
 
 	def do_account(self, line):
 		"""Account management. Requires admin privileges.
-		Account (with no arguments) lists all accounts.
-		Account <username> will show that or a matching account.
-		Account -d <username> will delete that or a matching account.
-		Account -a <username> <password> <type> will create an account.
-		Account -m <username> <parms> will modify that or a matching account.
-		<parms> are keyword=value pairs:
-			password=<password>
-			usertype=<type>
-			note=<text> (rarely used)
-			userdata=<number> (rarely used)
-		<type>: 1 for a normal (default) account, 2 for an admin account, or an account identifier (TT5 only).
-		An account identifier must match exactly one account and will be used to obtain user rights.
-		Use "" to specify the anonymous account as a source of rights.
-		Quote any arguments that contain spaces.
-		Example commands:
-			List all: account
-			Add: account -a dlee "blah" 1
-			Show one: account dlee
-			Delete: account -d dlee
-			Modify: account -m dlee password=blurfl
+		Run without arguments for a list of subcommands, or type a subcommand and -h for help with that subcommand.
+		Example: account list -h.
 		"""
-		args = shlex.split(line)
-		if not args:
-			accts = self.getAccounts()
-			tbl = TableFormatter("User Accounts", [
-				"Username", "Password", "Type", "Userdata", "Note",
-				"Channel", "Op Channels"
-			])
-			# TODO: Op Channels is a list of channel ids.
-			for username in sorted(accts):
-				acct = accts[username]
-				parms = acct.parms
-				tbl.addRow([
-					parms.username, parms.password,
+		args = TTParms(line, True)
+		self.dispatchSubcommand("account_", args)
+
+	def filterPasses(self, parms, filters, nullIsAnonymousAccount=False):
+		"""Returns True if the given parameter set passes the given filter list and False if not.
+		"""
+		if not filters: return True
+		if isinstance(parms, dict): vals = parms.values()
+		else: vals = parms
+		try: vals = ", ".join(vals)
+		except TypeError:
+			vals1 = []
+			for val in vals:
+				val1 = None
+				try: val1 = unicode(val)
+				except:
+					try: val1 = str(val)
+					except: pass
+				if val1 is None: continue
+				vals1.append(val1)
+			vals = ", ".join(vals1)
+		for filter in filters:
+			# ToDo: Bit of a kludge here.
+			if filter.startswith('"') and filter.endswith('"'): filter = filter[1:-1]
+			elif filter.endswith('"') and '="' in filter: filter = filter.replace('="', '=', 1)[:-1]
+			if "=" in filter:
+				fname,fvalWanted = filter.split("=", 1)
+				invert = False
+				if fname.startswith("!"):
+					fname = fname[1:]
+					invert = True
+				fvalActual = parms[fname]
+				if not invert and fvalActual != fvalWanted: return False
+				elif invert and fvalActual == fvalWanted: return False
+			elif filter == "" and nullIsAnonymousAccount:
+				# Special case for matching the anonymous account in an account list.
+				if parms["username"] != "": return False
+			else:
+				if filter.lower() not in vals.lower(): return False
+		return True
+
+	def account_list(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="account list", description="List all or selected accounts.", epilog="Examples: account list, acc li -a, acc li usertype=1, acc li -l doug, acc li !userrights=259591")
+		parser.add_argument("-a", "--admin", action="store_true", help="List only admin accounts (usertype=2).")
+		parser.add_argument("-l", "--long", action="store_true", help="Long listing; include all non-empty fields except passwords.")
+		parser.add_argument("-e", "--everything", action="store_true", help="Full listing; include all fields, even empty fields, except passwords. Useful for determining what fields exist.")
+		parser.add_argument("-p", "--passwords", action="store_true", help="Includes passwords in output.")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific field, or just value to match against any field. Fields include username, password, usertype, userdata, userrights, note, initchan, opchannels, and audiocodeclimit. More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces. As a special case, "" matches the anonymous account.')
+		opts = parser.parse_args(args)
+		if opts.admin: opts.filter.append("usertype=2")
+		accts = self.getAccounts()
+		if opts.filter: ttl = "Matching User Accounts"
+		else: ttl = "User Accounts"
+		parmsets = []
+		for username in sorted(accts):
+			acct = accts[username]
+			parms = acct.parms
+			if not self.filterPasses(parms, opts.filter, True): continue
+			parmsets.append(parms)
+		if not opts.long and not opts.everything:
+			# Short, tabular listing.
+			cols = ["Username", "Type", "Rights"]
+			if opts.passwords: cols.append("Password")
+			tbl = TableFormatter(ttl, cols)
+			for parms in parmsets:
+				row = ([
+					parms.username,
 					["0","Default","Admin","3","4","5"][int(parms.usertype)],
-					parms.userdata, parms.note,
-					parms.channel,
-					parms.opChannels
+					"{0:7d}".format(int(parms.userrights))
 				])
+				if opts.passwords: row.append(parms.password)
+				tbl.addRow(row)
+				if parms.note.strip():
+					tbl.addRow("        " +parms.note.strip())
 			self.msg(tbl.format(2))
 			return
-		action = "show"
-		if args[0].startswith("-"):
-			opt = args.pop(0)
-			if opt == "-a":
-				action = "add"
-			elif opt == "-d":
-				action = "del"
-			elif opt == "-m":
-				action = "mod"
+		# Long, multiline listing showing all or all non-empty fields.
+		if not parmsets:
+			self.msg("{0}:  0".format(ttl))
+			return
+		buf = "{0} ({1}):\n".format(ttl, str(len(parmsets)))
+		for parms in parmsets:
+			if opts.passwords:
+				buf += 'Account username "{0}" type {1} password "{2}"\n'.format(parms.username, parms.usertype, parms.password)
 			else:
-				raise SyntaxError("Unrecognized option: " +opt)
-		if not args:
-			raise SyntaxError("Must specify an account name with this option")
+				buf += 'Account username "{0}" type {1}\n'.format(parms.username, parms.usertype)
+			for k,v in sorted(parms.items()):
+				if k.lower() in ["username", "usertype", "password", "note"]: continue
+				if not opts.everything and (not v or (v.isdigit() and not int(v))): continue
+				if not opts.everything and "chan" in k.lower() and v == "[]": continue
+				buf += "    {0} {1}\n".format(k, v)
+			if parms.note: buf += 'Note: "{0}"\n'.format(parms.note)
+		self.msg(buf)
+
+	def account_add(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="account add", description="Add a new account", epilog="Examples: account add "" "" 1 (makes anonymous account), acc add Bill B1llPw 2, acc add Doug DougsPassword "" (uses the annonymous account for Doug's user rights)")
+		parser.add_argument("username", help='The username of the new account. Use "" to make the anonymous account. Use quotes if the name contains spaces.')
+		parser.add_argument("password", help='The password for the new account. Use "" to make an account with no password. Use quotes if the password contains spaces.')
+		parser.add_argument("usertype", help="1 for regular account, 2 for admin account, or the username of an account to use for user rights (TT5 only).")
+		parser.add_argument("field", nargs="*", help="fieldname=value pairs to set other fields for the account. More than one pair may be specified. Example fields include note and userdata. Use quotes if a field value contains spaces. Warning: If you specify an invalid field name, such as by misspelling a field name, the field value will be ignored and will not be set on the account.")
+		opts = parser.parse_args(args)
 		acctDict = self.getAccounts()
-		whichAcct = args.pop(0)
-		if action == "add":
-			if whichAcct.lower() in map(lambda a: a.lower(), acctDict):
-				raise ValueError("Account %s already exists" % (whichAcct))
-			if not args:
-				if self.curServer.is5():
-					raise SyntaxError("Must include a password and a user type or user rights source account")
-				else:
-					raise SyntaxError("Must include a password and a user type")
-			pw = args.pop(0)
-			if not args:
-				raise SyntaxError("Must include a user type (1 default, 2 admin) or an account to use for user rights")
-			utype = args.pop(0)
-			if utype not in ["1", "2"] and self.curServer.is5():
-				if utype == "" and acctDict.has_key(""):
-					acct = acctDict[""]
-				else:
-					accts = filter(lambda a: utype.lower() in a.lower(), acctDict)
-					rightsAcct = self.selectMatch(accts, "Select an Account For User Rights")
-					acct = acctDict[rightsAcct]
-				self.do_send('newaccount username="%s" password="%s" usertype=1 userRights=%s' % (
-					whichAcct, pw, acct.parms.userRights
-				))
-				return
-			self.do_send('newaccount username="%s" password="%s" usertype=%s' % (
-				whichAcct, pw, utype
-			))
+		pat = r'''[\s.,?/;:@#$%^&*'"!+=_-]+'''
+		u0 = re.sub(pat, '', opts.username.lower())
+		for username in acctDict.keys():
+			if username == opts.username: raise CommandError('Account "{0}" already exists'.format(opts.username))
+			if username.lower() == opts.username.lower():
+				if not self.confirm('Warning: There is already an account named "{0}" (same name but different letter casing). Proceed anyway (y/n)?'.format(username)):
+					return
+				else: continue
+			u1 = re.sub(pat, '', username.lower())
+			if u1 == u0:
+				if not self.confirm('Warning: There is already an account similarly named "{0}". Proceed anyway (y/n)?'.format(username)):
+					return
+				else: continue
+		userRights = None
+		if self.curServer.is5():
+			# Default user rights as of TeamTalk5Classic 5.2.1.4781. [DGL, 2017-04-04
+			userRights = 0x0003F607  # decimal 259591
+		utype = opts.usertype
+		if utype not in ["1", "2"] and self.curServer.is5():
+			if utype == "" and acctDict.has_key(""):
+				acct = acctDict[""]
+			else:
+				accts = filter(lambda a: utype.lower() in a.lower(), acctDict)
+				rightsAcct = self.selectMatch(accts, "Select an Account For User Rights")
+				acct = acctDict[rightsAcct]
+			utype = acct.parms.userType
+			if int(utype) == 2 and not self.confirm("{0} is an admin account. Make {1} an admin account also (y/n)?".format(acct.parms.username, opts.username)):
+				utype = "1"
+			userRights = acct.parms.userRights
+		# Username, password, and any other string values are assumed to be raw values; see the StringParm class.
+		parms = TTParms([KeywordParm("newaccount"),
+			StringParm("username", opts.username, True),
+			StringParm("password", opts.password, True),
+			IntParm("usertype", int(utype))
+		])
+		if userRights is not None:
+			parms.append(IntParm("userrights", userRights))
+		for field in opts.field:
+			field = TTParms(field)[0]
+			if field.name.lower() in ["username", "password", "usertype"]:
+				raise CommandError("username, password, and usertype may not be repeated as fieldname=value pairs")
+			parms.append(field)
+		self.do_send(parms)
+
+	def account_delete(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="account delete", description="Delete one or more existing accounts, with confirmation", epilog="Examples: account delete, acc del -a, acc del usertype=1, acc del !userrights=259591")
+		parser.add_argument("-a", "--admin", action="store_true", help="Consider only admin accounts (usertype=1).")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific field, or just value to match against any field. More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces. As a special case, "" matches the anonymous account.')
+		opts = parser.parse_args(args)
+		if opts.admin: opts.filter.append("usertype=2")
+		accts = self.getAccounts()
+		acctDict = {}
+		for username in sorted(accts):
+			acct = accts[username]
+			parms = acct.parms
+			if not self.filterPasses(parms, opts.filter, True): continue
+			acctDict[username] = parms
+		if not acctDict:
+			raise CommandError("No matching accounts")
+		# Select from remaining candidates exactly which account(s) to delete.
+		dels = self.selectMatch(acctDict.keys(), "Select One or More Accounts To Delete", allowMultiple=True)
+		if not dels: raise CommandError("No accounts selected")
+		if not self.confirm("Delete {0} (y/n)?".format(", ".join(['"'+d+'"' for d in dels]))):
 			return
-		# show/del/mod.
-		if whichAcct == "" and acctDict.has_key(""):
-			acct = acctDict[""]
-		else:
-			accts = filter(lambda a: whichAcct.lower() in a.lower(), acctDict)
-			whichAcct = self.selectMatch(accts, "Select an Account")
-			acct = acctDict[whichAcct]
-		if action == "show":
-			print acct
+		for username in dels:
+			self.do_send('delaccount username="%s"' % (username))
+
+	def account_modify(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="account modify", description="Modify an existing account", epilog="Examples: account modify Doug password=blah, acc mod Doug usertype=2 (make admin).")
+		parser.add_argument("username", help='The username of the existing account. Use "" to modify the anonymous account. Use quotes if the name contains spaces.')
+		parser.add_argument("field", nargs="*", help="fieldname=value pairs to set other fields for the account. More than one pair may be specified. Example fields include note and userdata. Use quotes if a field value contains spaces. Warning: If you specify an invalid field name, such as by misspelling a field name, the field value will be ignored and will not be set on the account.")
+		opts = parser.parse_args(args)
+		acctDict = self.getAccounts()
+		try: acct = acctDict[opts.username]
+		except KeyError: raise CommandError('Account "{0}" does not exist.'.format(opts.username))
+		# Get TTParms interpretation of the account parameters.
+		acctParms = TTParms(acct.initLine.strip())
+		# Remove the Useraccount keyword.
+		acctParms.pop(0)
+		parmDict = {}
+		for parm in acctParms:
+			# ToDo: Hack for ParmLine's mishandling of list types.
+			if parm.name.lower() == "opchannels" and isinstance(parm, StringParm):
+				parm = ListParm(parm.name, parm.value)
+			parmDict[parm.name] = parm
+		for field in opts.field:
+			field = TTParms(field)[0]
+			if field.name.lower() == "username":
+				raise CommandError("username may not be repeated as a fieldname=value pair")
+			parmDict[field.name] = field
+		parms = TTParms([KeywordParm("newaccount"),
+			StringParm("username", opts.username, True)
+		])
+		for k,v in parmDict.items():
+			if k.lower() == "username": continue
+			parms.append(v)
+		self.do_send(parms)
+
+	def do_channel(self, line):
+		"""Channel management.
+		Run without arguments for a list of subcommands, or type a subcommand and -h for help with that subcommand.
+		Example: channel list -h.
+		"""
+		args = TTParms(line, True)
+		self.dispatchSubcommand("channel_", args)
+
+	def channel_list(self, args):
+		"Use -h to get a full syntax description for this subcommand."
+		parser = ArgumentParser(prog="channel list", description="List all or selected channels.", epilog="Examples: channel list, chan li protected=1, chan li !type=1")
+		parser.add_argument("-l", "--long", action="store_true", help="Long listing; include all non-empty fields except passwords.")
+		parser.add_argument("-e", "--everything", action="store_true", help="Full listing; include all fields, even empty fields, except passwords. Useful for determining what fields exist.")
+		parser.add_argument("-p", "--passwords", action="store_true", help="Includes passwords in output.")
+		parser.add_argument("filter", nargs="*", help='fieldname=value to match exactly against a specific field, or just value to match against any field. Useful fields include name, topic, protected, maxusers, and type. More than one filter can be given. Prefix fieldname with "!" to select mismatches instead of matches. Quote any values that contain spaces.')
+		opts = parser.parse_args(args)
+		chans = self.curServer.channels
+		if opts.filter: ttl = "Matching Channels"
+		else: ttl = "Channels"
+		parmsets = []
+		# ToDo: Sorting by chanid is not so useful.
+		for chanid in sorted(chans):
+			parms = chans[chanid]
+			if not self.filterPasses(parms, opts.filter): continue
+			parmsets.append(parms)
+		if not opts.long and not opts.everything:
+			# Short, tabular listing.
+			if opts.passwords:
+				cols = ["chanid", "HasPW", "Password", "Type", "MaxUsers", "Channel"]
+			else:
+				cols = ["chanid", "HasPW", "Type", "MaxUsers", "Channel"]
+			tbl = TableFormatter(ttl, cols)
+			for parms in parmsets:
+				row = ([
+					"{0:5d}".format(int(parms.chanid)),
+					["No", "Yes"][int(parms.protected)],
+					"{0:4d}".format(int(parms.type)),
+					"{0:6d}".format(int(parms.maxusers)),
+					self.curServer.channelname(parms.chanid, False, True)
+				])
+				if opts.passwords: row.insert(2, parms.password)
+				tbl.addRow(row)
+				if parms.topic.strip():
+					tbl.addRow("        " +parms.topic.strip())
+			self.msg(tbl.format(2))
 			return
-		elif action == "del":
-			self.do_send('delaccount username="%s"' % (acct.parms.username))
+		# Long, multiline listing showing all or all non-empty fields.
+		if not parmsets:
+			self.msg("{0}:  0".format(ttl))
 			return
-		# Mod.
-		# FakeEvent so we can use ParmLine's line-parsing code for this.
-		parmline = ParmLine("fakeEvent " +" ".join(args))
-		parms = acct.parms
-		parms.update(parmline.parms)
-		self.do_send(ParmLine("newaccount", parms))
+		buf = "{0} ({1}):\n".format(ttl, str(len(parmsets)))
+		for parms in parmsets:
+			buf += 'Chanid {0} {1} type {2}\n'.format(parms.chanid, self.curServer.channelname(parms.chanid, False, True), parms.type)
+			for k,v in sorted(parms.items()):
+				if k.lower() in ["chanid", "channel", "name", "type", "topic"]: continue
+				if not opts.everything and (not v or (v.isdigit() and not int(v))): continue
+				if not opts.everything and not "topic" in k.lower() and v == "[]": continue
+				if not opts.passwords and "password" in k.lower(): continue
+				buf += "    {0} {1}\n".format(k, v)
+			if parms.topic: buf += 'Topic: "{0}"\n'.format(parms.topic)
+		self.msg(buf)
 
 	def do_tt(self, line):
 		"""Create a .tt file for a user account.
 		Usage: tt [clientVersion] ttFileName [userName [channelToJoin]]
 		If no clientVersion is given, the current server's version is used.
-		Adding a userName includes the user's login and password credentials in the generated file.
+		Adding a userName includes the user's login and password credentials in the generated file. Requires admin privileges.
 		Adding a channelToJoin makes the tt file cause the user to land in the given channel on login.
 		"""
 		args = shlex.split(line)
@@ -981,7 +1238,7 @@ TTCom version %ver%
 		if not fname.lower().endswith(".tt"):
 			fname += ".tt"
 		if (os.path.exists(fname)
-		and not self.confirm("File %s already exists. Replace it (y/n)?" % (
+		and not confirm("File %s already exists. Replace it (y/n)?" % (
 			fname
 		))):
 			return
@@ -1016,6 +1273,16 @@ TTCom version %ver%
 		thr = threading.Thread(target=task)
 		thr.daemon = True
 		thr.start()
+
+	def do_motd(self, line=""):
+		"""Show the message of the day (motd) for the current server.
+		"""
+		# Raw value from server.
+		motd = self.curServer.info.motd
+		# Trick to reconstruct its printable format.
+		motd = 'motd="{0}"'.format(motd)
+		motd = TTParms(motd, True).pop(0).value
+		self.msg(motd)
 
 	def do_whoIs(self, line=""):
 		"""Show information about a user.
@@ -1098,6 +1365,8 @@ TTCom version %ver%
 		buf.add("Note", u.pop("note", ""), True)
 		# Anything non-empty value not handled above goes here.
 		for k in sorted(u):
+			# Except for TTCom-internal stuff.
+			if k == "temporary": continue
 			buf.add(k, u[k])
 		self.msg(str(buf))
 		if isMe: self.curServer.reportRightsIssues()
@@ -1114,7 +1383,7 @@ TTCom version %ver%
 		return "%s (%s)" % (fqdn, addr)
 
 	def do_addresses(self, line=""):
-		"""Show IP addresses and ports for a user.
+		"""Show IP addresses and ports for a user when available.
 		Syntax: addresses <name>, where <name> can be a full or partial user name.
 		If name is omitted, this current user is used.
 		"""
@@ -1139,13 +1408,14 @@ TTCom version %ver%
 
 	def do_op(self, line):
 		"""Op or deop a user in one or more channels or check ops.
-		Syntax: op [-a|-d] [<user>] [<channel> ...]
+		Syntax: op [-a|-d] [<user> [<channel> ...]]
 		Op with no arguments lists all ops on the server.
 		Op with just a user lists that user's ops.
 		Op with -a or -d and a user adds or deletes that user's ops from channels.
 		If no channel is specified, the user's current channel is used.
 		Otherwise, the command affects all channels listed.
 		Changing ops requires admin rights or ops in the affected channel(s).
+		Note that this command deals with active ops, not ops set as part of user accounts; see the Account command for those.
 		"""
 		server = self.curServer
 		k = "operators"
@@ -1190,9 +1460,11 @@ TTCom version %ver%
 		# case above.
 		for chanName in args:
 			c = self.channelMatch(chanName)
-			self.do_send('op userid=%s channel="%s" opstatus=%s' % (
+			if self.curServer.is5(): chspec = "chanid=%s" % (c.chanid)
+			else: chspec = 'channel="%s"' % (c.channel)
+			self.do_send('op userid=%s %s opstatus=%s' % (
 				u.userid,
-				c.channel,
+				chspec,
 				opstatus
 			))
 			# Let the op list print after those modifications.
@@ -1209,11 +1481,11 @@ TTCom version %ver%
 			))
 
 	def do_admins(self, line=""):
-		"""List the admins and where they are and come from.
+		"""List the admins currently on server and where they are and come from.
 		"""
 		channelname = self.curServer.channelname
 		for u in self.curServer.users.values():
-			if int(u.usertype) != 2: continue
+			if not u.usertype or int(u.usertype) != 2: continue
 			ch = None
 			if u.chanid: ch = channelname(u.chanid)
 			print "%s: %s, %s" % (
@@ -1300,7 +1572,7 @@ TTCom version %ver%
 				optname = opt[0]
 				lst.append("%s = %s" % (
 					optname,
-					self.conf.option(optname)
+					conf.option(optname)
 				))
 			self.msg("\n".join(lst))
 			return
@@ -1309,6 +1581,6 @@ TTCom version %ver%
 		opt = self.selectMatch(opts, "Select an Option:", f)[0]
 		self.msg("%s = %s" % (
 			opt,
-			self.conf.option(opt, newval)
+			conf.option(opt, newval)
 		))
 

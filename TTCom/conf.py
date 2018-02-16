@@ -1,6 +1,6 @@
 """TTCom configuration class.
 
-Copyright (C) 2011-2016 Doug Lee
+Copyright (C) 2011-2017 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -60,13 +60,12 @@ class Conf(object):
 		c.write(open(self.inipath, "w"))
 		return self.opt(sSect, sOpt)
 
-	def option(self, sOpt, newval=None):
+	def option(self, sOpt, newval=None, section="Options"):
 		"""
-		Get or set an option in the Options section of the ini file.
+		Get or set an option in the Options or given section of the ini file.
 		Returns the current value whether or not it is first changed.
 		"""
-		sSect = "Options"
-		return self.opt(sSect, sOpt, newval)
+		return self.opt(section, sOpt, newval)
 
 	def getopt(self, c, sSect, sOpt, dfl=""):
 		"""
@@ -107,7 +106,8 @@ class Conf(object):
 			items = []
 			results[name] = items
 			self._sectsDone.clear()
-			self._includeItems(items, "server defaults", c)
+			try: self._includeItems(items, "server defaults", c)
+			except (iniparse.NoSectionError, iniparse.NoOptionError): pass
 			self._includeItems(items, server, c)
 		self._sectsDone.clear()
 		return results
@@ -136,3 +136,4 @@ class Conf(object):
 				continue
 			lst.append(item)
 
+conf = Conf("ttcom.conf")

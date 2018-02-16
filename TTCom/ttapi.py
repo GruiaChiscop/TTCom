@@ -3,7 +3,7 @@
 Author:  Doug Lee
 Credits to Chris Nestrud and Simon Jaeger for some ideas and a bit of code.
 
-Copyright (C) 2011- Doug Lee
+Copyright (C) 2011-2017- Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -23,8 +23,9 @@ with this program.  If not, see <http://www.gnu.org/licenses/>.
 from time import sleep
 import re, socket
 import threading
-from attrdict import AttrDict
+from tt_attrdict import AttrDict
 from parmline import ParmLine
+from conf import conf
 
 class ServerState(object):
 	"""Connection states for a server.
@@ -177,6 +178,8 @@ class TeamTalkServerConnection(object):
 			- Gets the usertimeout for determining ping frequency.
 			- Collects other welcome-line parameters into self.welcomeParms.
 			- Starts the pinger thread for this server.
+			- Sends a UDP packet that prevents Windows XP clients on
+			  this server from freezing briefly on this client's login.
 			- Signals disconnection on error during all that.
 		"""
 		self.state = "connecting"
@@ -187,7 +190,7 @@ class TeamTalkServerConnection(object):
 		self.sockfile = self.sock.makefile("r")
 		# Signal connection.
 		self.state = "notifyConnect"
-		self.notifyCaller("_connected_")
+		self.notifyCaller('_connected_ ipaddr="{0}" tcpport={1}'.format(*self.sock.getpeername()))
 		try:
 			# Get the welcome line and use it.
 			self.state = "welcomeWait"
@@ -205,9 +208,13 @@ class TeamTalkServerConnection(object):
 			self.welcomeParms = welcomeLine.parms
 			self.userid = welcomeLine.parms.userid
 			self.usertimeout = int(welcomeLine.parms.usertimeout)
+			self.protocol = welcomeLine.parms.protocol
 			self.state = "makeThreads"
 			self.newThread(self.watcher)
 			self.newThread(self.pinger)
+			self.state = "sendUDP"
+			self.sendUDP4()
+			# can time out and raise an error.
 			self.state = "connected"
 			# No timeouts after connect so packets don't split up.
 			self.sock.settimeout(None)
@@ -216,6 +223,44 @@ class TeamTalkServerConnection(object):
 			self.disconnect()
 			self.state = "disconnected"
 			raise
+
+	def sendUDP4(self):
+		"""Send a UDP packet that seems to be required at TT4 login to avoid a
+		two-or-so-second lockup on XP machines running the 4.2 client.
+		The UDP packet sent is not a complete packet compared to what
+		clients send but appears to be enough for this purpose. The
+		packet structure appears to be as follows:
+			0x01 0x02: Bytes seen in a Windows 4.2 client UDP packet
+				and sent without interpretation.
+			Little-endian format of userid field from TCP Welcome
+				message from server.
+			Six 0's, not sure what belongs there.
+		Example real 4.2 UDP packet (hex): 01 02 DC 0F 00 00 4E 78 5C 2E
+		(DC 0F is 0x0FDC, or 4060, the userid for this session)
+		This packet should be sent as soon as the server Welcome
+		message shows up. [DGL, 2012-01-02]
+		NOTE: If udpport==0, calling this method is a no-op.
+		This method does not work on TeamTalk 5. [DGL, 2014-09-20]
+		"""
+		port = self.parent.loginParms.get("udpport")
+		if port is None: port = int(self.port)
+		elif int(port) > 0: port = int(port)
+		else:
+			return
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		userid = int(self.userid)
+		# Little-endian representation of the userid for transmission.
+		userid = chr(userid & 0xFF) +chr(userid >> 8)
+		if float(self.protocol) >= 5.0:
+			return
+		else:
+			data = "\2\1%s\0\0\0\0\0\0" % ( userid)
+		sock.settimeout(10)
+		sock.connect((self.host, port))
+		sock.send(data)
+		# Wait for a response without worrying about what it is.
+		sock.recv(1)
+		sock.close()
 
 	def disconnect(self, reason=""):
 		"""Disconnect and send the corresponding callback signal.
@@ -299,7 +344,7 @@ class TeamTalkServerConnection(object):
 		Returns True on success and False on error.
 		disconnect() is called on an IOError.
 		"""
-		line = line.rstrip() +"\r\n"
+		line = str(line).rstrip() +"\r\n"
 		try: self.sock.send(line)
 		except IOError:
 			self.disconnect("Error during send")
@@ -335,10 +380,9 @@ class TeamtalkServer(object):
 		self.host = host
 		if not shortname: shortname = host
 		self.shortname = shortname
-		self.verNotify = False
 		self.autoLogin = 0
 		parms["clientname"] = "TTCom"
-		parms["version"] = self.parent.version
+		parms["version"] = conf.version
 		parms.setdefault("tcpport", "10333")
 		parms.setdefault("udpport", parms["tcpport"])
 		# Teamtalk 4.3 clients pop up an error like this if there is
@@ -426,6 +470,8 @@ class TeamtalkServer(object):
 		If background is False, returns True if logged in on exit and False if not.
 		If background is True, returns True unconditionally.
 		"""
+		# This lets manual login reset the stoppage of autoLogins.
+		self.manualCM = False
 		if background:
 			th = threading.Thread(target=self.login)
 			th.daemon = True
@@ -581,19 +627,17 @@ class TeamtalkServer(object):
 		ver = ver[0]
 		return ver == "5"
 
-	def send(self, parmline):
+	def send(self, line):
 		"""Send a command to this server.
-		parmline can be a ParmLine object or a plain text line.
+		line can be anything with an str value.
 		Raises a custom IOError on failure.
 		"""
-		if type(parmline) is not ParmLine:
-			parmline = ParmLine(parmline)
-		if not self.conn.send(parmline.line):
+		if not self.conn.send(str(line)):
 			raise IOError("Connection lost")
 
-	def sendWithWait(self, parmline, returnResults=False):
+	def sendWithWait(self, line, returnResults=False):
 		"""Send a command to this server and wait for it to complete.
-		parmline can be a ParmLine object or a plain text line.
+		line can be anything with an str value.
 		If returnResults is True, the command's response is returned
 		instead of generating events. Returned responses take
 		the form of a list of ParmLine objects.
@@ -603,27 +647,29 @@ class TeamtalkServer(object):
 		self.curID += 1
 		if self.curID > self.maxID:
 			self.curID = 1
-		# Make parmmline a ParmLine in case it already isn't while adding an id.
-		parmline = ParmLine(parmline, {"id": self.curID})
+		line = str(line).rstrip()
+		line += " id={0:0d}".format(self.curID)
 		self.ev_idblockDone.clear()
 		if returnResults: self._startCollecting(self.curID)
 		else:
 			self.waitID = self.curID
-		try: self.send(parmline)
+		try: self.send(line)
 		except IOError:
 			# Connection failure.
 			self.disconnect()
 			# Break any waiting code so everything can restart.
 			raise
 		if not self.waitOn(self.ev_idblockDone, 8):
-			self.errorFromEvent("Timeout on %s command" % (parmline.event))
+			self.errorFromEvent("Timeout on %s command" % (line.split(None, 1)[0]))
 			self.waitID = 0
 		if returnResults:
 			return self._stopCollecting()
 
-	def nonEmptyNickname(self, user, forceDetails=False):
+	def nonEmptyNickname(self, user, forceDetails=False, includeUserType=False):
 		"""Make sure not to output a null string for a user with no nickname.
 		This method can handle user and ban parmlines as input.
+		forceDetails causes userid and IP address to be included.
+		If includeUserType is True, "User" or "Admin" will precede the user information.
 		"""
 		nickname = user.get("nickname")
 		username = user.get("username")
@@ -639,6 +685,12 @@ class TeamtalkServer(object):
 				name = "<nameless user %s>" % (user.userid)
 				forceDetails = True
 				idIncluded = True
+		if includeUserType:
+			utype = user.usertype
+			if utype == "1": utype = "User"
+			elif utype == "2": utype = "Admin"
+			else: utype = "UserType%s" % (utype)
+			name = "%s %s" % (utype, name)
 		if not forceDetails: return name
 		ip = user.get("ipaddr")
 		if not ip or ip.startswith("0.0.0.0"):
@@ -651,9 +703,10 @@ class TeamtalkServer(object):
 			name += " (userid %s)" % (user.userid)
 		return name
 
-	def channelname(self, id, isRawName=False):
+	def channelname(self, id, isRawName=False, preserveRootName=False):
 		"""Adjust channel names for printing as appropriate.
 		Pass a channel ID, or a channel name with isRawName=True.
+		"/" becomes "the root channel" unless preserveRootName is True.
 		"""
 		if isRawName: name = id
 		else:
@@ -669,7 +722,7 @@ class TeamtalkServer(object):
 					ch = self.channels[str(ch.parentid)]
 					if not int(ch.parentid): break
 				name += "/"
-		if name == "/":
+		if name == "/" and not preserveRootName:
 			name = "the root channel"
 		return name
 
@@ -743,13 +796,13 @@ class TeamtalkServer(object):
 			if channel is None:
 				cid = user.get("chanid")
 				if cid: channel = self.channels[cid].channel
-			activeChannels.setdefault(channel, set())
-			activeChannels[channel].add(self.nonEmptyNickname(user))
+			activeChannels.setdefault(channel, [])
+			activeChannels[channel].append(self.nonEmptyNickname(user))
 		lines = []
 		nchannels = 0
 		nusers = 0
 		for channel in sorted(activeChannels):
-			people = list(activeChannels[channel])
+			people = activeChannels[channel]
 			people.sort(key=lambda p: p.lower())
 			n = len(people)
 			nusers += n
@@ -768,9 +821,10 @@ class TeamtalkServer(object):
 		lines.insert(0, "Users %d, active channels %d:" % (nusers, nchannels))
 		self.output("\n".join(lines))
 
-	def summarizeVersions(self):
-		"""Summarize users by TeamTalk client version and client name on this server.
+	def summarizeVersions(self, proto=None):
+		"""Summarize users by TeamTalk packet protocol, client version, and client name on this server.
 		This current user is omitted.
+		proto, if given, restricts to a particular packet protocol by number. -1 means all but 0.
 		"""
 		if self.state != "loggedIn":
 			state = self.state
@@ -788,7 +842,14 @@ class TeamtalkServer(object):
 			if version is None: version = ""
 			client = user.get("clientname")
 			if client is None: client = ""
-			version = " ".join([version, client]).strip()
+			protocol = user.get("packetprotocol")
+			if proto == -1:
+				if protocol == "0": continue
+			elif proto is not None:
+				if protocol != str(proto): continue
+			if protocol is None: protocol = "pp<unknown>"
+			else: protocol = "pp{0}".format(protocol)
+			version = "{0} {1} {2}".format(protocol, version, client).strip()
 			versions.setdefault(version, set())
 			versions[version].add(self.nonEmptyNickname(user))
 		lines = []
@@ -811,18 +872,31 @@ class TeamtalkServer(object):
 					n,
 					", ".join(people)
 				))
+		if not len(lines):
+			self.output("No users matched the filter.")
+			return
 		lines.insert(0, "Users %d, versions/clients %d:" % (nusers, nversions))
 		self.output("\n".join(lines))
 
 	def subBitNames(self):
 		"""Return a list of bit names for sublocal and subpeer.
 		"""
-		bitnames = [
-			"user messages", "channel messages",
-			"broadcast messages",
-			"audio", "video",
-			"desktop", "b64"
-		]
+		if self.is5():
+			bitnames = [
+				"user messages", "channel messages",
+				"broadcast messages",
+				"audio", "video",
+				"desktop", "desktopAccess",
+				"notUsed",
+				"stream"
+			]
+		else:
+			bitnames = [
+				"user messages", "channel messages",
+				"broadcast messages",
+				"audio", "video",
+				"desktop", "desktopAccess",
+			]
 		return bitnames
 
 	def updateParms(self, category, parms, newParms, silent=False):
@@ -849,17 +923,25 @@ class TeamtalkServer(object):
 				if v1 == v2: continue
 				# Lower case are subscriptions, upper case are intercepts.
 				# See .subBitNames() for longer names.
-				bitnames = [
-					"u", "c", "b", "a", "v", "d", "0x40", "0x80",
-					"U", "C", "B", "A", "V", "D", "0x4000", "0x8000"
-				]
+				if self.is5():
+					bitcount = 32
+					bitnames = [
+						"u", "c", "b", "a", "v", "d", "x", "0", "s", "1", "2", "3", "4", "5", "6", "7",
+						"U", "C", "B", "A", "V", "D", "X", "00", "S", "11", "22", "33", "44", "55", "66", "77"
+					]
+				else:
+					bitcount = 16
+					bitnames = [
+						"u", "c", "b", "a", "v", "d", "x", "s",
+						"U", "C", "B", "A", "V", "D", "X", "S"
+					]
 				if k == "sublocal":
 					ki = "local subscription changes"
 				else:
 					ki = "remote subscription changes"
 				mask = 1
 				bitbuf = []
-				for b in range(0, 16):
+				for b in range(0, bitcount):
 					b1 = int(v1) & mask
 					b2 = int(v2) & mask
 					if b1 == b2:
@@ -1243,9 +1325,9 @@ class TeamtalkServer(object):
 		self.users[parms['userid']].server = self
 		self.updateParms("Logged in", self.users[parms['userid']], parms)
 		if (self.state != "loggingIn"
-		and self.users[parms.userid].nickname):
+		and (self.users[parms.userid].nickname)):
 			self.outputFromEvent("%s logged in" %
-				(self.nonEmptyNickname(self.users[parms.userid])
+				(self.nonEmptyNickname(self.users[parms.userid], False, True)
 			))
 		return True
 
@@ -1311,72 +1393,11 @@ class TeamtalkServer(object):
 			self.updateParms("Add user", user, parms, True)
 		if self.state != "loggingIn":
 			issues = ""
-			issues0 = self.clientIssueString(user)
-			if issues0: issues = " (" +issues0 +")"
-			self.outputFromEvent("%s%s joined %s" % (
+			self.outputFromEvent("%s joined %s" % (
 				self.nonEmptyNickname(self.users[parms.userid]),
-				issues,
 				self.channelname(parms.channelid)
 			))
-			if issues0: self.reportIssues(user, issues0)
 		return True
-
-	def clientIssueString(self, user):
-		"""Identify server/client compatibility problems.
-		"""
-		sver = self.info.version[:3]
-		try: uver = user.version[:3]
-		except: uver = ""
-		if not uver: return ""
-		elif sver == uver: return ""
-		channel = self.channels[user.channelid]
-		codec = channel.audioCodec
-		if "," in codec:
-			ctype = int(codec.split(",", 1)[0][1:])
-		else:
-			ctype = int(codec[1:-1])
-		# No audio and Speex (non variable bit rate).
-		if ctype in [0, 1]: return
-		if sver >= "4.2":
-			if uver < "4.2":
-				return "client too old"
-			else:
-				# Assume 4.2 servers can handle newer clients for now.
-				return ""
-		else:  # server older than 4.2
-			if uver >= "4.2":
-				return "client too new"
-
-	def reportIssues(self, user, issues):
-		"""Report when someone shows up with an incompatible client.
-		"""
-		sver = self.info.version[:3]
-		uver = user.version[:3]
-		if "old" in issues:
-			msg = ("""Oops, this server has upgraded to TeamTalk version %s but you are still using client version %s. Your audio will not work here unless you come back using TeamTalk client version %s."""
-			% (sver, uver, sver))
-		else:
-			msg = ("""Oops, this server has not yet upgraded to TeamTalk version %s. Your audio will not work here unless you come back using TeamTalk client version %s."""
-			% (uver, sver))
-		msg = issues.upper() +": " +msg
-		msg += " Client versions can be found at http://www.bearware.dk."
-		sendTo = "channel"
-		if sendTo == "channel":
-			name = user.nickname
-			if name: name += " "
-			msg = "*** User " +name +msg
-			msg = 'message type=2 channel="%s" content="%s"' % (
-				user.channel, msg
-			)
-		else:  # user
-			msg = 'message type=1 destuserid=%s content="%s"' % (
-				user.userid, msg
-			)
-		if self.verNotify:
-			task = lambda: self.send(msg)
-			thr = threading.Timer(5, task)
-			thr.setDaemon(True)
-			thr.start()
 
 	def event_removeuser(self, parms):
 		"""Sent when a user leaves a channel.
@@ -1413,7 +1434,7 @@ class TeamtalkServer(object):
 			self._handleRecycling()
 			return True
 		if self.users[parms.userid].nickname:
-			self.outputFromEvent("%s logged out" % (self.nonEmptyNickname(self.users[parms.userid])))
+			self.outputFromEvent("%s logged out" % (self.nonEmptyNickname(self.users[parms.userid], False, True)))
 		del self.users[parms['userid']]
 		return True
 
@@ -1437,8 +1458,20 @@ class TeamtalkServer(object):
 	def event_updateuser(self, parms):
 		"""Sent when a user's status or other information changes.
 		"""
-		name = self.nonEmptyNickname(self.users[parms.userid])
-		self.updateParms(name, self.users[parms['userid']], parms)
+		try: user = self.users[parms.userid]
+		except KeyError:
+			# This happens on servers where users are not visible
+			# until you join their channel. The loggedin event is not
+			# sent for these.
+			self.users.setdefault(parms.userid, AttrDict())
+			# For when someone pulls a list of users from several servers at once.
+			self.users[parms.userid].server = self
+			user = self.users[parms.userid]
+			self.updateParms("Add user to server", user, parms)
+			self.users[parms['userid']].temporary = True
+		else:
+			name = self.nonEmptyNickname(self.users[parms.userid])
+			self.updateParms(name, self.users[parms['userid']], parms)
 		return True
 
 	def event_messagedeliver(self, parms):
@@ -1546,11 +1579,12 @@ class TeamtalkServer(object):
 	def event_addfile(self, parms):
 		"""Send when a file is offered in a channel.
 		"""
-		self.files.setdefault(parms.fileid, AttrDict())
-		self.updateParms("Add file", self.files[parms['fileid']], parms)
+		fid = "{0}:{1}".format(parms.chanid, parms.filename)
+		self.files.setdefault(fid, AttrDict())
+		self.updateParms("Add file", self.files[fid], parms)
 		self.outputFromEvent("%s sent to %s file %s (id %s)" % (
 			parms.owner,
-			self.channelname(parms.channel, True),
+			self.channelname(parms.chanid),
 			parms.filename,
 			parms.fileid
 		))
@@ -1559,11 +1593,12 @@ class TeamtalkServer(object):
 	def event_removefile(self, parms):
 		"""Send when a file is removed from a channel's offerings.
 		"""
+		fid = "{0}:{1}".format(parms.chanid, parms.filename)
 		self.outputFromEvent("File %s removed from channel %s" % (
 			parms.filename,
-			self.channelname(parms.channel, True)
+			self.channelname(parms.chanid)
 		))
-		del self.files[parms['fileid']]
+		del self.files[fid]
 		return True
 
 	def event_kicked(self, parms):

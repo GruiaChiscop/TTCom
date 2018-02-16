@@ -1,7 +1,8 @@
 """Formatter of plain-text tabular data.
-Given column headers and rows of cells, produces a nicely formatted text output.
+Given optional (but common) column headers and rows of cells, produces a nicely formatted text output.
+Rows that are not cells are treated as strings and printed across all columns.
 
-Copyright (C) 2011-2016 Doug Lee
+Copyright (C) 2011-2017 Doug Lee
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -21,10 +22,10 @@ with this program.  If not, see <http://www.gnu.org/licenses/>.
 class TableFormatter(object):
 	"""Usage:
 		tbl = TableFormatter(title[, colHeaders])
-		tbl.addRow(...)
+		tbl.addRow(...)  # each a row of cells or a string to print across all columns)
 		print tbl.format([gutterWidth])
 	"""
-	def __init__(self, title, colheaders=[]):
+	def __init__(self, title="", colheaders=[]):
 		self.title = title
 		self.colheaders = colheaders
 		self.rows = []
@@ -32,28 +33,51 @@ class TableFormatter(object):
 
 	def addRow(self, row, excludeFromCount=False):
 		self.rows.append(row)
-		if not excludeFromCount:
+		# Exclude row from count when requested and also when it's not a list--i.e., it prints ignoring columns.
+		if not excludeFromCount and row.__class__.__dict__.has_key("__iter__"):
 			self.rowcount += 1
 
 	def format(self, gutterwidth=2):
-		if not len(self.rows): return self.title +":  0"
+		"""Print the table with the given gutter width (space count) between columns, default 2.
+		If gutterwidth is set to 0, columns are separated by tabs.
+		If title is given and not null, it appears above the table with a row count; and the table indents under it.
+		Otherwise the table prints flush left.
+		Rows that are not cells are treated as strings and printed across all columns.
+		If you want one of these to indent, include indent spaces and such in the string when calling addRow().
+		"""
+		if not len(self.rows):
+			if not self.title: return ""
+			return self.title +":  0"
 		if self.colheaders:
 			widths = [len(unicode(hdr)) for hdr in self.colheaders]
 		elif len(self.rows):
 			widths = [len(unicode(cell)) for cell in self.rows[0]]
 		for row in self.rows:
+			# Skip rows that have no columns.
+			if not row.__class__.__dict__.has_key("__iter__"): continue
 			for i,cell in enumerate(row):
 				widths[i] = max(widths[i], len(unicode(cell)))
-		gutter = " " * gutterwidth
-		result = "%s (%d):\n" % (self.title, self.rowcount)
-		lmargin = "    "
+		tabs = True
+		gutter = "\t"
+		if gutterwidth:
+			tabs = False
+			gutter = " " * gutterwidth
+		result = ""
+		lmargin = ""
+		if self.title:
+			result = "%s (%d):\n" % (self.title, self.rowcount)
+			lmargin = "    "
 		allRows = []
 		if self.colheaders: allRows.append(self.colheaders)
 		allRows.extend(self.rows)
 		for row in allRows:
+			if not row.__class__.__dict__.has_key("__iter__"):
+				result += lmargin +"    " +row +"\n"
+				continue
 			fields = []
 			for i,cell in enumerate(row):
-				fmt = "%-" +unicode(widths[i]) +"s"
+				if tabs: fmt = "%s"
+				else: fmt = "%-" +unicode(widths[i]) +"s"
 				fields.append( fmt % (cell))
 			result += lmargin +gutter.join(fields) +"\n"
 		return result
